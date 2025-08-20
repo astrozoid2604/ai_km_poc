@@ -1,5 +1,3 @@
-**About:** AI PoC for Knowledge Marketplace: MS Teams extension + LLM-powered ingestion and semantic search with vector database.
-
 # Knowledge Marketplace Enhancement: Semantic Data Ingestion & Search  
 
 ## 📌 Current Practice  
@@ -53,5 +51,5 @@
 
 ---
 
-✅ With this approach, Knowledge Marketplace becomes more **accessible**, **reliable**, and **user-friendly**—streamlining both data entry and discovery.  
+✅ With this approach, Knowledge Marketplace becomes more **accessible**, **reliable**, and **user-friendly** in terms of streamlining both data entry and discovery.  
 
