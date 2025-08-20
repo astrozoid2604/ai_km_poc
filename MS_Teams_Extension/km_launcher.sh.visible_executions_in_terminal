@@ -1,0 +1,82 @@
+#!/bin/zsh
+set -euo pipefail
+
+# ========= USER SETTINGS =========
+ENV_NAME="ehss"
+APP_PATH="$HOME/Desktop/GITHUB/EHSS_Hazardous_Waste_Automation/app.py"
+PORT=8501
+# If you installed Anaconda instead of Miniconda, change the base path below.
+CONDA_BASE="$HOME/miniconda3"
+# =================================
+
+LOG="/tmp/km_launcher.log"
+STREAMLIT_BIN="$CONDA_BASE/envs/$ENV_NAME/bin/streamlit"
+APP_URL="http://localhost:$PORT"
+
+{
+  echo "===== $(date) Starting km_launcher.sh ====="
+  echo "[INFO] Env        : $ENV_NAME"
+  echo "[INFO] Streamlit  : $STREAMLIT_BIN"
+  echo "[INFO] App path   : $APP_PATH"
+  echo "[INFO] Port       : $PORT"
+
+  # 1) If Streamlit already listening, just open the browser and stop.
+  if lsof -iTCP:$PORT -sTCP:LISTEN -n >/dev/null 2>&1; then
+    echo "[INFO] Streamlit already running on $PORT, opening browser."
+    open -a "Safari" "$APP_URL" || open "$APP_URL"
+    echo "===== $(date) km_launcher.sh done (already running) ====="
+    exit 0
+  fi
+
+  # 2) Build the Terminal command (two strategies):
+  #    A) Preferred: use the exact streamlit binary inside the env (no PATH needed)
+  #    B) Fallback: open a login shell, conda activate, then run streamlit
+  if [ -x "$STREAMLIT_BIN" ]; then
+    echo "[INFO] Using absolute streamlit binary."
+    RUN_CMD=$(printf "%q run %q --server.port %q >> %q 2>&1" \
+      "$STREAMLIT_BIN" "$APP_PATH" "$PORT" "/tmp/km_streamlit.log")
+  else
+    echo "[WARN] Streamlit binary not found at $STREAMLIT_BIN."
+    echo "[WARN] Falling back to 'conda activate' inside Terminal."
+
+    # Try to locate conda; adjust if your conda lives elsewhere.
+    if [ -x "$CONDA_BASE/bin/conda" ]; then
+      CONDA_HOOK=$(printf '%s' "$("$CONDA_BASE/bin/conda" shell.zsh hook)")
+      # Build a robust shell line that:
+      # - initializes conda in the Terminal
+      # - activates env
+      # - runs streamlit and logs output
+      # Note: Use printf %q to escape paths/args safely.
+      RUN_CMD=$(cat <<EOF
+eval "$CONDA_HOOK"; conda activate $(printf "%q" "$ENV_NAME"); \
+streamlit run $(printf "%q" "$APP_PATH") --server.port $(printf "%q" "$PORT") >> /tmp/km_streamlit.log 2>&1
+EOF
+)
+    else
+      echo "[ERROR] Could not find conda at $CONDA_BASE/bin/conda."
+      echo "        Please set CONDA_BASE correctly or install Streamlit binary at:"
+      echo "        $STREAMLIT_BIN"
+      exit 1
+    fi
+  fi
+
+  echo "[INFO] Opening Terminal to start Streamlit…"
+
+  # 3) Use AppleScript to open a new Terminal window and run the command
+  #    - We let Terminal manage the environment; you can see the process live.
+  #    - The command logs to /tmp/km_streamlit.log.
+  /usr/bin/osascript <<APPLESCRIPT
+tell application "Terminal"
+  activate
+  do script "$RUN_CMD"
+end tell
+APPLESCRIPT
+
+  # 4) Give Streamlit a moment to boot, then open Safari (fallback to default browser)
+  sleep 2
+  echo "[INFO] Opening browser…"
+  open -a "Safari" "$APP_URL" || open "$APP_URL"
+
+  echo "===== $(date) km_launcher.sh done ====="
+} >> "$LOG" 2>&1
+

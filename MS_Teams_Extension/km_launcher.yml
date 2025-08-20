@@ -1,0 +1,12 @@
+matches:
+  - trigger: "/km"
+    replace: "{{out}}"
+    vars:
+      - name: out
+        type: script
+        params:
+          args:
+            - /bin/zsh
+            - -lc
+            - >
+              "/Users/jameslim/Library/Application Support/espanso/scripts/km_launcher.sh"
