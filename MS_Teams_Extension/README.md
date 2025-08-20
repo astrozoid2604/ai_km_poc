@@ -4,7 +4,7 @@ This guide explains how to configure your macOS environment so that typing `/km`
 
 Sideloading MS Teams message extension (i.e. the slash command) is only possible to be done in work/school account where we need to build a message extension/bot with the Developer Portal for Teams and upload as a custom app which rquires an M365 account + admin settings. Naturally, this feature addition needs permission from Amgen MS Teams admin which typically takes a few weeks. Since the time is of the essence, the proof-of-concept (PoC) demo is done through personal laptop so org admin permission is not required. Since sideloading personal MS Teams extension is not possible, we are going to fake the experience of web application being invoked by MS Teams message extension. 
 
-We will use a tiny launcher script + a system-wide text expander that runs scripts when you type a trigger. Specifically, we will use **Espanso** (an open-source text expander) to simulate a MS Teams command trigger. When we type "/km" in MS Teams, it will start the target Streamlit app in the background and open Safari browser.
+We will use a tiny launcher script + a system-wide text expander that runs scripts when you type a trigger. Specifically, we will use **espanso** (an open-source text expander) to simulate a MS Teams command trigger. When we type "/km" in MS Teams, it will start the target Streamlit app in the background and open Safari browser.
 
 Why not other routes?
 - Power Automate from a personal Teams account won't launch a process on your Mac wihout a local agent anyway, and custom app/bot upload needs an org tenant (i.e. Work/School MS Teams account) as discussed above.
@@ -25,31 +25,31 @@ At the time of writing, development for KM-specific WebApp-based ChatBot for dat
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 ```
 
-### Install Espanso
+### Install espanso
 
 ``` bash
-brew install --cask Espanso
+brew install --cask espanso
 ```
 
-Start Espanso from Applications, and grant **Accessibility** and **Input Monitoring** permissions under: **System Settings → Privacy & Security → Accessibility**.
+Start espanso from Applications, and grant **Accessibility** and **Input Monitoring** permissions under: **System Settings → Privacy & Security → Accessibility**.
 
-Next, obtain Espanso's directory can be obtained by running below command.
+Next, obtain espanso's directory can be obtained by running below command.
 ```bash
-Espanso path
+espanso path
 ```
 
 If your installation is correct, you will get the output below.
 ```bash
-Config: ~/Library/Application Support/Espanso
-Packages: ~/Library/Application Support/Espanso/match/packages
-Runtime: ~/Library/Caches/Espanso
+Config: ~/Library/Application Support/espanso
+Packages: ~/Library/Application Support/espanso/match/packages
+Runtime: ~/Library/Caches/espanso
 ```
 
-Espanso's directory is `~/Library/Application Support/Espanso` in this case.
+espanso's directory is `~/Library/Application Support/espanso` in this case.
 
-Then, create a `scripts` directory inside the Espanso's directory.
+Then, create a `scripts` directory inside the espanso's directory.
 ```bash
-cd "~/Library/Application Support/Espanso"
+cd "~/Library/Application Support/espanso"
 mkdir scripts
 ```
 
@@ -59,7 +59,7 @@ mkdir scripts
 
 Create a launcher script that runs your Streamlit app by placing `km_launcher.sh` in the `scripts` directory mentioned earlier.
 
-Example: **`~/Library/Application Support/Espanso/scripts/km_launcher.sh`**
+Example: **`~/Library/Application Support/espanso/scripts/km_launcher.sh`**
 
 Please update `ENV_NAME` and `APP_PATH` variables accordingly. 
 - `ENV_NAME`: Environment variable that denotes the conda environment name in which all packages required to run the Streamlit application will be installed.
@@ -68,7 +68,7 @@ Please update `ENV_NAME` and `APP_PATH` variables accordingly.
 Make it executable:
 
 ``` bash
-chmod +x "~/Library/Application Support/Espanso/scripts/km_launcher.sh"
+chmod +x "~/Library/Application Support/espanso/scripts/km_launcher.sh"
 ```
 
 **Optional:**
@@ -76,13 +76,13 @@ chmod +x "~/Library/Application Support/Espanso/scripts/km_launcher.sh"
 
 ------------------------------------------------------------------------
 
-## 3. Configure Espanso Match
+## 3. Configure espanso Match
 
-Create a match definition so typing `/km` triggers the script by placing `km_launcher.yml` in the `match` directory within Espanso's directory mentioned earlier.
+Create a match definition so typing `/km` triggers the script by placing `km_launcher.yml` in the `match` directory within espanso's directory mentioned earlier.
 
-Example: **`~/Library/Application Support/Espanso/match/km_launcher.yml`**
+Example: **`~/Library/Application Support/espanso/match/km_launcher.yml`**
 
-Reload Espanso:
+Reload espanso:
 
 ``` bash
 espanso restart
@@ -106,13 +106,13 @@ Whenever you update the `km_launcher.sh` or `km_launcher.yml`, need to restart e
 
 ## 5. Troubleshooting
 
--   If nothing happens, ensure `{{out}}` is included in `replace:` within `~/Library/Application Support/Espanso/match/km_launcher.yml` (required to execute scripts).
--   If apps still won't open, try running Espanso in unmanaged mode:
+-   If nothing happens, ensure `{{out}}` is included in `replace:` within `~/Library/Application Support/espanso/match/km_launcher.yml` (required to execute scripts).
+-   If apps still won't open, try running espanso in unmanaged mode:
 ``` bash
 espanso service stop
 espanso start --unmanaged
 ```
--   Confirm Espanso has **Accessibility** and **Input Monitoring** permissions in macOS settings.
+-   Confirm espanso has **Accessibility** and **Input Monitoring** permissions in macOS settings.
 
 ------------------------------------------------------------------------
 
