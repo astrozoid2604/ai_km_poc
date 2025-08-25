@@ -1,0 +1,15 @@
+# never commit secrets
+.env
+.env.*.local
+*.key
+*.pem
+
+# streamlit local secrets file (if you ever use it)
+.streamlit/secrets.toml
+
+# Local runtime dirs
+.chroma/
+vectorstore/*
+!vectorstore/.gitkeep
+tmp/
+uploads/

@@ -1,0 +1,27 @@
+name: ai4km
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - openai
+      - langchain
+      - tiktoken
+      - faiss-cpu
+      - chromadb
+      - pandas
+      - numpy
+      - streamlit
+      - gradio
+      - python-docx
+      - PyPDF2
+      - openpyxl
+      - Office365-REST-Python-Client
+      - requests
+      - python-dotenv
+      - pydantic
+      # Optional if you later want API endpoints
+      - fastapi
+      - uvicorn
