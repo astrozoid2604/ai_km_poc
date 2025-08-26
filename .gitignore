@@ -16,3 +16,6 @@ uploads/
 
 # no need to commit jupyter notebook checkpoints
 .ipynb_checkpoints/
+
+
+*DS_Store

@@ -6,6 +6,8 @@ dependencies:
   - python=3.10
   - ipykernel
   - jupyter
+  - msal
+  - requests
   - pip
   - pip:
       - openai
