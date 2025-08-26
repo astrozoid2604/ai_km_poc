@@ -1,3 +1,27 @@
+<details>
+<summary>Project Structure</summary>
+.
+├── ai4km.yaml
+├── app.py
+├── README.md
+├── sharepoint_certificates
+│   ├── ai4km_cert.cer
+│   ├── ai4km_cert.key
+│   ├── ai4km_cert.pfx
+│   ├── cert.pem
+│   ├── cert.zip
+│   └── privkey.pem
+├── structure.txt
+├── test_notebooks
+│   ├── TEST_OpenAI-API-Key.ipynb
+│   └── TEST_SharePoint_Connection.ipynb
+├── tmp
+├── uploads
+└── vectorstore
+</details>
+
+---
+
 ## 0. Prerequisites (once)
 - OS: macOS/Windows/Linux
 - Conda: Miniconda/Anaconda installed

@@ -1,5 +1,16 @@
 # Teams Trigger to Launch Streamlit App (macOS)
 
+<details>
+<summary>Project Structure</summary>
+.
+├── km_launcher.sh
+├── km_launcher.sh.visible_executions_in_terminal
+├── km_launcher.yml
+├── README.md
+└── structure.txt
+</details>
+
+
 This guide explains how to configure your macOS environment so that typing `/km` in Microsoft Teams (personal account) automatically launches a Streamlit application in Safari.
 
 Sideloading MS Teams message extension (i.e. the slash command) is only possible to be done in work/school account where we need to build a message extension/bot with the Developer Portal for Teams and upload as a custom app which rquires an M365 account + admin settings. Naturally, this feature addition needs permission from Amgen MS Teams admin which typically takes a few weeks. Since the time is of the essence, the proof-of-concept (PoC) demo is done through personal laptop so org admin permission is not required. Since sideloading personal MS Teams extension is not possible, we are going to fake the experience of web application being invoked by MS Teams message extension. 

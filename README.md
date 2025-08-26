@@ -1,5 +1,37 @@
 # Knowledge Marketplace Enhancement: Semantic Data Ingestion & Search  
 
+<details>
+<summary>Project Structure</summary>
+.
+├── LICENSE
+├── MS_Teams_Extension
+│   ├── km_launcher.sh
+│   ├── km_launcher.sh.visible_executions_in_terminal
+│   ├── km_launcher.yml
+│   └── README.md
+├── README.md
+├── structure.txt
+└── WebApp_ChatBot
+    ├── ai4km.yaml
+    ├── app.py
+    ├── README.md
+    ├── sharepoint_certificates
+    │   ├── ai4km_cert.cer
+    │   ├── ai4km_cert.key
+    │   ├── ai4km_cert.pfx
+    │   ├── cert.pem
+    │   ├── cert.zip
+    │   └── privkey.pem
+    ├── test_notebooks
+    │   ├── TEST_OpenAI-API-Key.ipynb
+    │   └── TEST_SharePoint_Connection.ipynb
+    ├── tmp
+    ├── uploads
+    └── vectorstore
+</details>
+
+---
+
 ## 📌 Current Practice  
 **Data Capture**  
 - Users fill in details via a Power Apps form (link).  
