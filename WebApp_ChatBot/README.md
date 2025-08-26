@@ -1,5 +1,4 @@
-<details>
-<summary>Project Structure</summary>
+<code>
 .
 ├── ai4km.yaml
 ├── app.py
@@ -18,7 +17,7 @@
 ├── tmp
 ├── uploads
 └── vectorstore
-</details>
+</code>
 
 ---
 

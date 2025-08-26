@@ -1,7 +1,6 @@
 # Knowledge Marketplace Enhancement: Semantic Data Ingestion & Search  
 
-<details>
-<summary>Project Structure</summary>
+<code>
 .
 ├── LICENSE
 ├── MS_Teams_Extension
@@ -28,7 +27,7 @@
     ├── tmp
     ├── uploads
     └── vectorstore
-</details>
+</code>
 
 ---
 

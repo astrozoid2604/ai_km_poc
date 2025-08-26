@@ -1,14 +1,13 @@
 # Teams Trigger to Launch Streamlit App (macOS)
 
-<details>
-<summary>Project Structure</summary>
+<code>
 .
 ├── km_launcher.sh
 ├── km_launcher.sh.visible_executions_in_terminal
 ├── km_launcher.yml
 ├── README.md
 └── structure.txt
-</details>
+</code>
 
 
 This guide explains how to configure your macOS environment so that typing `/km` in Microsoft Teams (personal account) automatically launches a Streamlit application in Safari.
