@@ -26,6 +26,7 @@ dependencies:
       - requests
       - python-dotenv
       - pydantic
+      - cryptography
       # Optional if you later want API endpoints
       - fastapi
       - uvicorn
