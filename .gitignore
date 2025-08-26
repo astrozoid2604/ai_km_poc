@@ -12,7 +12,9 @@
 vectorstore/*
 !vectorstore/.gitkeep
 tmp/
+!tmp/.gitkeep
 uploads/
+!uploads/.gitkeep
 
 # no need to commit jupyter notebook checkpoints
 .ipynb_checkpoints/
