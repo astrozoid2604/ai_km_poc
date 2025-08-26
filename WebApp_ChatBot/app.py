@@ -22,11 +22,13 @@ if not OPENAI_API_KEY:
 VECTOR_DB_PATH = os.getenv("VECTOR_DB_PATH", ".chroma")
 SHAREPOINT_ENABLED = os.getenv("SHAREPOINT_ENABLED", "false").lower() == "true"
 
-SP_TENANT = os.getenv("SP_TENANT")
-SP_SITE_URL = os.getenv("SP_SITE_URL")
-SP_LIST_NAME = os.getenv("SP_LIST_NAME")
-SP_CLIENT_ID = os.getenv("SP_CLIENT_ID")
-SP_CLIENT_SECRET = os.getenv("SP_CLIENT_SECRET")
+# SharePoint (certificate-based app-only)
+SP_TENANT      = os.getenv("SP_TENANT")             # e.g., yourtenant.onmicrosoft.com OR tenant GUID
+SP_SITE_URL    = os.getenv("SP_SITE_URL")           # e.g., https://<tenant>.sharepoint.com/sites/ai4km
+SP_LIST_NAME   = os.getenv("SP_LIST_NAME")          # e.g., AI4KM Knowledge Assets
+SP_CLIENT_ID   = os.getenv("SP_CLIENT_ID")          # App (client) ID
+SP_CERT_THUMB  = os.getenv("SP_CERT_THUMBPRINT")    # UPPERCASE hex, no colons
+SP_CERT_PEM    = os.getenv("SP_CERT_PEM_PATH")      # path to PEM **private key** (e.g., ./privkey.pem)
 
 # ========== OpenAI ==========
 from openai import OpenAI
@@ -138,31 +140,112 @@ def local_meta_lookup(record_ids: List[str]) -> pd.DataFrame:
     df = pd.read_csv(LOCAL_META_CSV)
     return df[df["RecordId"].isin(record_ids)].copy()
 
-# ========== SharePoint Client (when enabled) ==========
+# ========== SharePoint Client (certificate app-only) ==========
 def sharepoint_available() -> bool:
-    return SHAREPOINT_ENABLED and all([SP_SITE_URL, SP_LIST_NAME, SP_CLIENT_ID, SP_CLIENT_SECRET])
+    # All must be present to enable SharePoint path
+    needed = [SP_SITE_URL, SP_LIST_NAME, SP_CLIENT_ID, SP_TENANT, SP_CERT_THUMB, SP_CERT_PEM]
+    return SHAREPOINT_ENABLED and all(needed)
+
+def _get_sp_ctx():
+    """Return a ClientContext authenticated via client certificate."""
+    from office365.sharepoint.client_context import ClientContext
+    return ClientContext(SP_SITE_URL).with_client_certificate(
+        tenant=SP_TENANT,
+        client_id=SP_CLIENT_ID,
+        thumbprint=SP_CERT_THUMB,
+        cert_path=SP_CERT_PEM
+    )
 
 def sharepoint_add_item(row: Dict[str, str]) -> bool:
-    from office365.sharepoint.client_context import ClientContext
-    from office365.runtime.auth.client_credential import ClientCredential
+    """
+    Write one item into the AI4KM Knowledge Assets list.
+    Expects keys: Title, ContentSummary, Benefits, ContentOwner, Function, Site, RecordId
+    """
     try:
-        ctx = ClientContext(SP_SITE_URL).with_credentials(ClientCredential(SP_CLIENT_ID, SP_CLIENT_SECRET))
+        ctx = _get_sp_ctx()
         sp_list = ctx.web.lists.get_by_title(SP_LIST_NAME)
         item_properties = {
-            "Title": row["Title"],
+            "Title":          row["Title"],
             "ContentSummary": row["ContentSummary"],
-            "Benefits": row["Benefits"],
-            "ContentOwner": row["ContentOwner"],
-            "Function": row["Function"],
-            "Site": row["Site"],
-            "RecordId": row["RecordId"]
+            "Benefits":       row["Benefits"],
+            "ContentOwner":   row["ContentOwner"],
+            "Function":       row["Function"],
+            "Site":           row["Site"],
+            "RecordId":       row["RecordId"],
         }
         item = sp_list.add_item(item_properties)
-        ctx.execute_query()
+        ctx.execute_query()  # commit
         return True
     except Exception as e:
         st.warning(f"SharePoint write failed, storing locally instead. Details: {e}")
         return False
+
+def sharepoint_fetch_by_record_id(record_id: str) -> Dict[str, Any] | None:
+    """
+    Fetch a single list item by RecordId. Returns a dict with fields or None if not found.
+    Uses CAML (reliable across tenants); we only call it for a handful of IDs.
+    """
+    from office365.sharepoint.listitems.caml.caml_query import CamlQuery
+    try:
+        ctx = _get_sp_ctx()
+        sp_list = ctx.web.lists.get_by_title(SP_LIST_NAME)
+
+        caml = CamlQuery.parse(
+            f"""
+            <View>
+              <Query>
+                <Where>
+                  <Eq>
+                    <FieldRef Name='RecordId' />
+                    <Value Type='Text'>{record_id}</Value>
+                  </Eq>
+                </Where>
+              </Query>
+              <ViewFields>
+                <FieldRef Name='Title' />
+                <FieldRef Name='ContentSummary' />
+                <FieldRef Name='Benefits' />
+                <FieldRef Name='ContentOwner' />
+                <FieldRef Name='Function' />
+                <FieldRef Name='Site' />
+                <FieldRef Name='RecordId' />
+                <FieldRef Name='ID' />
+              </ViewFields>
+              <RowLimit>1</RowLimit>
+            </View>
+            """
+        )
+        items = sp_list.get_items(caml)
+        ctx.load(items)
+        ctx.execute_query()
+        if len(items) == 0:
+            return None
+        it = items[0]
+        p = it.properties
+        return {
+            "RecordId":      p.get("RecordId"),
+            "Title":         p.get("Title"),
+            "ContentSummary":p.get("ContentSummary"),
+            "Benefits":      p.get("Benefits"),
+            "ContentOwner":  p.get("ContentOwner"),
+            "Function":      p.get("Function"),
+            "Site":          p.get("Site"),
+            "ItemId":        p.get("ID"),
+        }
+    except Exception as e:
+        st.warning(f"SharePoint read failed; falling back to local metadata where possible. Details: {e}")
+        return None
+
+def sharepoint_lookup_record_ids(record_ids: List[str]) -> pd.DataFrame:
+    """Fetch a small list of records by RecordId (loops one-by-one using CAML)."""
+    out = []
+    for rid in record_ids:
+        row = sharepoint_fetch_by_record_id(rid)
+        if row:
+            out.append(row)
+    return pd.DataFrame(out) if out else pd.DataFrame(
+        columns=["RecordId","Title","ContentSummary","Benefits","ContentOwner","Function","Site","ItemId"]
+    )
 
 # ========== File parsers ==========
 from PyPDF2 import PdfReader
@@ -382,10 +465,26 @@ if st.session_state.mode == "search":
             st.write("### Top Matches")
             st.dataframe(df, use_container_width=True)
 
-            # Build an Excel with the matched records, including Content Summary + Benefits if available locally
-            # Merge with local CSV (best-effort). If SharePoint-only, you can extend to fetch by RecordId.
-            local_extra = local_meta_lookup([r["RecordId"] for r in rows])
-            out = df.merge(local_extra, on="RecordId", how="left", suffixes=("",""))
+            # Build an Excel with the matched records, including Content Summary + Benefits
+            rec_ids = [r["RecordId"] for r in rows]
+            
+            if sharepoint_available():
+                # Prefer SharePoint as the source of truth
+                sp_extra = sharepoint_lookup_record_ids(rec_ids)
+                # Merge on RecordId (left join to preserve the ranking/similarity)
+                out = df.merge(sp_extra.drop(columns=["ItemId"], errors="ignore"),
+                               on="RecordId", how="left", suffixes=("",""))
+                # If some are still missing (e.g., not found on SP), try to backfill from local CSV
+                missing = out["ContentSummary"].isna()
+                if missing.any():
+                    local_extra = local_meta_lookup(out.loc[missing, "RecordId"].tolist())
+                    out.loc[missing, ["Title","ContentOwner","Function","Site","ContentSummary","Benefits"]] = \
+                        out.loc[missing].merge(local_extra, on="RecordId", how="left")[["Title_y","ContentOwner_y","Function_y","Site_y","ContentSummary","Benefits"]].values
+            else:
+                # No SharePoint → use local CSV entirely
+                local_extra = local_meta_lookup(rec_ids)
+                out = df.merge(local_extra, on="RecordId", how="left", suffixes=("",""))
+
 
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
