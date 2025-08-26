@@ -41,6 +41,38 @@ def embed_text(text: str) -> List[float]:
     resp = oai.embeddings.create(model=EMBED_MODEL, input=[text])
     return resp.data[0].embedding
 
+def _coerce_json(s: str) -> dict:
+    """Make a best-effort to parse JSON returned by an LLM."""
+    if not isinstance(s, str):
+        raise ValueError("Expected string")
+    s = s.strip()
+
+    # Strip Markdown code fences
+    if s.startswith("```"):
+        # remove first fence line
+        first_nl = s.find("\n")
+        if first_nl != -1:
+            s = s[first_nl+1:]
+        if s.endswith("```"):
+            s = s[: -3].strip()
+
+    # Keep only the outermost JSON object
+    start = s.find("{")
+    end = s.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        s = s[start:end+1]
+
+    # Normalize smart quotes/apostrophes to ASCII
+    s = (s
+         .replace("\u201c", '"').replace("\u201d", '"')  # “ ”
+         .replace("\u2018", "'").replace("\u2019", "'")) # ‘ ’
+
+    # Remove trailing commas before a closing brace/bracket
+    import re
+    s = re.sub(r",\s*(\}|\])", r"\1", s)
+
+    return json.loads(s)
+
 def llm_structured_extract(corpus: str, content_owner: str, function: str, site: str) -> Dict[str, str]:
     sys = (
         "You are an expert knowledge engineer. From the provided corpus, extract:\n"
@@ -58,7 +90,7 @@ def llm_structured_extract(corpus: str, content_owner: str, function: str, site:
     text = r.choices[0].message.content
     # simple JSON parse attempt
     try:
-        j = json.loads(text)
+        j = _coerce_json(text)
         return {
             "Title": j.get("Title","").strip(),
             "ContentSummary": j.get("ContentSummary","").strip(),
