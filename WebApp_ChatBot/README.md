@@ -3,7 +3,7 @@
 - Conda: Miniconda/Anaconda installed
 - Python: 3.10+
 - OpenAI API key: Create and copy your key (`OPENAI_API_KEY`)
-- (Optional) SharePoint: App registration with client credentials (see Section 5 below)
+- (Optional) SharePoint: App registration with client credentials (see Section 4 below)
 
 ---
 
@@ -38,44 +38,53 @@ Create a file named `.env` in the project root:
 
 ```bash
 # ----- Required -----
-OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+OPENAI_API_KEY=sk-REPLACE_ME
 
 # Vector DB (Chroma) persistence directory
 VECTOR_DB_PATH=.chroma
 
-# Toggle SharePoint integration (true|false). If false, metadata is stored locally.
-SHAREPOINT_ENABLED=false
+# Toggle SharePoint integration
+SHAREPOINT_ENABLED=true
 
 # ----- Only needed if SHAREPOINT_ENABLED=true -----
+# --- The instructions on how to get all 8 SharePoint-related env variables below would be elaborated in Section 5 `SharePoint App Permissions` ---
+
+# Tenant
 SP_TENANT=yourtenant.onmicrosoft.com
-SP_SITE_URL=https://yourtenant.sharepoint.com/sites/YourSiteName
+SP_TENANT_ID=REPLACE_ME
+
+# Target site & list
+SP_SITE_URL=https://yourtenant.sharepoint.com/sites/ai4km
 SP_LIST_NAME=AI4KM Knowledge Assets
-SP_CLIENT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-SP_CLIENT_SECRET=your-client-secret
+
+#App credentials
+SP_CLIENT_ID=REPLACE_ME
+SP_CLIENT_SECRET=REPLACE_ME
+
+#App certificates (P.S. SP_CERT_PEM_PATH below is fixed)
+SP_CERT_THUMBPRINT=REPLACE_ME
+SP_CERT_PEM_PATH=./sharepoint_certificates/privkey.pem
 ```
 
 ---
 
-## 4. Prepare the SharePoint List (only if using SharePoint now)
+## 4. SharePoint App Permissions (optional, admin required)
 
-If you plan to use **SharePoint Online** for storing metadata instead of the local CSV fallback, you will need to prepare a SharePoint List.
+SharePoint and Azure App registration are both only available in work/school O365 account and will not be available for `Microsoft Office 365 Personal` subcription for individuals/families. Therefore, the assumption here is that you need to create a `Microsoft 365 Business Basic` under free trial version of 30 days (extendable). Kindly follow the steps below sequentially.
 
-### 4a. Create a New SharePoint List
+### 4a. Create `Microsoft 365 Business Basic` account for 1 person in the company.
+1. Search in search engine `Microsoft 365 Business Basic`. At the time of writing on 26 AUG 2025, the cost is USD$7.85 (tax included) per month. However, for this development purpose, can opt for **Try free for one month**.
+2. You will be navigated to complete **Subcription & account details**. Can fill this section up accordingly.
+3. Next, you will be redirected to complete **Sign-in details**. Please note that `Domain name` here is none other than `SP_TENANT` env variable.
+4. Next, you will be redirected to **Add payment, confirm & complete order**. Ensure the **Sold-to address** is the same as registered mailing address of your debit card/credit card. Then, click **Start Trial**.
 
-1.  Go to your SharePoint Site (e.g.,
-    `https://<tenant>.sharepoint.com/sites/ai4km`).
-2.  Click on **Settings (⚙️)** → **Site contents**.
-3.  Select **+ New → List**.
-4.  Choose **Blank list**, and name it:
-
-```{=html}
-<!-- -->
-```
-    AI4KM Knowledge Assets
-
-### 4b. Add the Required Columns
-
-If `SHAREPOINT_ENABLED=true`, add these columns (Display Name --> Type --> Internal Name you must ensure). In the newly created list, add the following columns (use the exact internal names):
+### 4b. Prepare the SharePoint List
+1. If you plan to use **SharePoint Online** (i.e. `SHAREPOINT_ENABLED=true`) for storing metadata instead of the lcoal CSV fallback (i.e. `SHAREPOINT_ENABLED=false`), you will need to prepare a SharePoint List.
+2. Go to https://<your_tenant>.sharepoint.com, and click the SharePoint start page (i.e. home icon).
+3. Create a new site with exact name `ai4km`
+4. Within this `ai4km` site, create a new list with exact name `AI4KM Knowledge Assets`.
+5. Upon doing these, you will have 2 environment variables, namely, `SP_SITE_URL=https://<your_tenant>.sharepoint.com/sites/ai4k`, and `SP_LIST_NAME=AI4KM Knowledge Assets`.
+6. Add these following columns
 
  | Display Name    |Type                    |Internal Name    |
  | ----------------|------------------------|-----------------|
@@ -93,21 +102,46 @@ If `SHAREPOINT_ENABLED=true`, add these columns (Display Name --> Type --> Inter
 > If you enable SharePoint integration later (`SHAREPOINT_ENABLED=true` in `.env`), the chatbot will write to this list.
 > If SharePoint is nott enabled, the project falls back to a lcoal CSV in `vectorstore/metadata.csv`.
 
+### 4c. Register new app in Azure portal
+1. Go to https://portal.azure.com.
+2. Search for **App Registrations**
+3. Click **+ New registration**. Fill up the **Name** as `ai4km-sp`. For the **Supported account types**, choose `Accounts in this organizational directory only (only - Single tenant). Then, click **Register**`.
+4. If you refresh the **App registrations**, you will see app with **Display Name** equals to `ai4km-sp` being created.
+5. If you click into the `ai4km-sp` app, you will be redirected to **Overview** selection in left panel.
+6. In this **Overview** selection, `SP_CLIENT_ID` env variable is equal to **Application (client) ID** and `SP_TENANT_ID` is equal to **Directory (tenant) ID**.
+7. In the left panel, you will see **Certificates & secrets**. Click on the **Client secrets** tab and click **+ New client secret**. Please note that `SP_CLIENT_SECRET` is equal to **Value** and that you can only see the full string of **Value** for the first time you visit this page. If you were to refresh or navigate away and back, **Value** would be hidden and you need to create a new client secret.
+8. In the left panel, click **API permissions**. Click **+ Add a permission**. Under **Microsoft API**, select **SharePoint** > **Application permission**. Then, under **Sites**, select `Sites.FullControl.All` and `Sites.ReadWrite.All`. Then, click **Add permissions**. Next, click on **Grant admin consent for** > **Yes**.
+9. In your command terminal, go to `./WebApp_ChatBot/sharepoint_certificates` and execute the following commands.
+
+```bash
+# creates ai4km_cert.pfx and ai4km_cert.cer (public) with no export password
+openssl req -x509 -nodes -days 730 -newkey rsa:2048 -keyout ai4km_cert.key -out ai4km_cert.cer -subj "/CN=ai4km-app"
+
+# package to PFX (set a password if you like)
+openssl pkcs12 -export -out ai4km_cert.pfx -inkey ai4km_cert.key -in ai4km_cert.cer -passout pass:
+
+# Extract private key (no password)
+openssl pkcs12 -in ai4km_cert.pfx -nocerts -nodes -out privkey.pem
+
+# Extract public cert
+openssl pkcs12 -in ai4km_cert.pfx -clcerts -nokeys -out cert.pem
+
+# Extract private key PEM (no password prompt if your PFX has none)
+openssl pkcs12 -in ai4km_cert.pfx -nocerts -nodes -out privkey.pem
+```
+
+10. `SP_CERT_THUMBPRINT` env variable is equal to the output of below command.
+
+```bash
+# Compute SHA1 thumbprint (remove colons, use uppercase)
+openssl x509 -in cert.pem -noout -fingerprint -sha1 | awk -F= '{print $2}' | tr -d ':' | tr '[:lower:]' '[:upper:]'
+```
+
+11. Go back to Azure portal at https://portal.azure.com. Go to **App Registrations** > **ai4km-sp** > **Certificates & secrets**. Click **Upload certificate** and upload `./WebApp_ChatBot/sharepoint_certificates/ai4km_cert.cer`.
+
 ---
 
-## 5. SharePoint App Permissions (optional, admin required)
-
-If you want immediate PoC without admin friction, keep `SHAREPOINT_ENABLED=false` now (local CSV).
-
-To enable SharePoint later:
-1. Register an Azure AD app (Entra ID) --> get **Client ID** + **Client Secret**
-2. Grant **Sites.Selected** (Graph) or **AllSites.FullControl** (SharePoint) app-only permissions and consent.
-3. If using **Sites.Selected**, assign the app access to your site (via Graph or SharePoint admin center).
-4. Put credentials into `.env`, set `SHAREPOINT_ENABLED=true`.
-
----
-
-## 6. Create the Streamlit App (Single File)
+## 5. Create the Streamlit App (Single File)
 
 Create `app.py` in the project root with the code below.
 
@@ -123,7 +157,7 @@ This implements:
 
 --- 
 
-## 7. Run the App
+## 6. Run the App
 
 ```bash 
 conda activate ai4km
@@ -136,7 +170,7 @@ Your browser opens to the Streamlit interface with **two big buttons**:
 
 ---
 
-## 8. How the 1:1 Mapping is Guaranteed
+## 7. How the 1:1 Mapping is Guaranteed
 
 - For each new asset, the app creates a unique `RecordId` (UUID).
 - Exactly **one embedding** is computed from the **consolidated corpus** per asset and stored in Chroma with **that same** `RecordId`.
@@ -145,7 +179,7 @@ Your browser opens to the Streamlit interface with **two big buttons**:
 
 ---
 
-## 9. Switching to SharePoint Later
+## 8. Switching to SharePoint Later
 
 1. Set `SHAREPOINT_ENABLED=true` in `.env` and fill all SP_* variables.
 2. Ensure your list exists and internal names match.
@@ -154,7 +188,7 @@ Your browser opens to the Streamlit interface with **two big buttons**:
 
 ---
 
-## 10. Testing Checklist
+## 9. Testing Checklist
 
 - Ingestion with **PDF + DOCS + XLSX** together
 - Email validation only accept `@amgen.com`
@@ -165,7 +199,7 @@ Your browser opens to the Streamlit interface with **two big buttons**:
 
 ---
 
-## 11. Troubleshooting
+## 10. Troubleshooting
 
 - `ModuleNotFoundError`: Confirm the conda env is active and packages installed.
 - **Chroma errors**: Delete `.chroma` directory and re-run (it will rebuild).
