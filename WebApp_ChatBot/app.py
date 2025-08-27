@@ -140,19 +140,28 @@ def upsert_asset_vector(record_id: str, text: str, metadata: Dict[str, Any], vec
 
 def search_topk(query: str, k: int = 3):
     qvec = embed_text(query)
+
+    # Do NOT include "ids" here; Chroma returns ids regardless.
     res = collection.query(
         query_embeddings=[qvec],
         n_results=k,
-        include=["ids","documents","metadatas","distances"]
+        include=["documents", "metadatas", "distances"]  # valid keys only
     )
-    # distances are cosine distance if using cosine space; convert to similarity = 1 - distance (approx)
+
+    ids         = (res.get("ids") or [[]])[0]
+    documents   = (res.get("documents") or [[]])[0]
+    metadatas   = (res.get("metadatas") or [[]])[0]
+    distances   = (res.get("distances") or [[]])[0]
+
     out = []
-    for i in range(len(res.get("ids",[[]])[0])):
+    for i in range(len(ids)):
+        dist = float(distances[i]) if i < len(distances) and distances[i] is not None else None
+        sim  = (1.0 - dist) if dist is not None else None  # cosine similarity approx
         out.append({
-            "RecordId": res["ids"][0][i],
-            "Document": res["documents"][0][i],
-            "Metadata": res["metadatas"][0][i],
-            "Score": float(1 - res["distances"][0][i]) if "distances" in res else None
+            "RecordId": ids[i],
+            "Document": documents[i] if i < len(documents) else None,
+            "Metadata": metadatas[i] if i < len(metadatas) else {},
+            "Score": sim
         })
     return out
 
@@ -213,63 +222,41 @@ def sharepoint_add_item(row: Dict[str, str]) -> bool:
         return False
 
 def sharepoint_fetch_by_record_id(record_id: str) -> Dict[str, Any] | None:
-    """
-    Fetch a single list item by RecordId. Returns a dict with fields or None if not found.
-    Uses CAML (reliable across tenants); we only call it for a handful of IDs.
-    """
-    from office365.sharepoint.listitems.caml.caml_query import CamlQuery
+    """Fetch one item by RecordId using OData $filter (no CAML)."""
     try:
         ctx = _get_sp_ctx()
         sp_list = ctx.web.lists.get_by_title(SP_LIST_NAME)
 
-        caml = CamlQuery.parse(
-            f"""
-            <View>
-              <Query>
-                <Where>
-                  <Eq>
-                    <FieldRef Name='RecordId' />
-                    <Value Type='Text'>{record_id}</Value>
-                  </Eq>
-                </Where>
-              </Query>
-              <ViewFields>
-                <FieldRef Name='Title' />
-                <FieldRef Name='ContentSummary' />
-                <FieldRef Name='Benefits' />
-                <FieldRef Name='ContentOwner' />
-                <FieldRef Name='Function' />
-                <FieldRef Name='Site' />
-                <FieldRef Name='RecordId' />
-                <FieldRef Name='ID' />
-              </ViewFields>
-              <RowLimit>1</RowLimit>
-            </View>
-            """
+        items = (
+            sp_list.items
+            .select(["Id","Title","RecordId","ContentSummary","Benefits","ContentOwner","Function","Site"])  # ← list, not string
+            .filter(f"RecordId eq '{record_id}'")
+            .top(1)
         )
-        items = sp_list.get_items(caml)
         ctx.load(items)
         ctx.execute_query()
+
         if len(items) == 0:
             return None
+
         it = items[0]
         p = it.properties
         return {
-            "RecordId":      p.get("RecordId"),
-            "Title":         p.get("Title"),
-            "ContentSummary":p.get("ContentSummary"),
-            "Benefits":      p.get("Benefits"),
-            "ContentOwner":  p.get("ContentOwner"),
-            "Function":      p.get("Function"),
-            "Site":          p.get("Site"),
-            "ItemId":        p.get("ID"),
+            "RecordId":       p.get("RecordId"),
+            "Title":          p.get("Title"),
+            "ContentSummary": p.get("ContentSummary"),
+            "Benefits":       p.get("Benefits"),
+            "ContentOwner":   p.get("ContentOwner"),
+            "Function":       p.get("Function"),
+            "Site":           p.get("Site"),
+            "ItemId":         p.get("Id") or p.get("ID"),
         }
     except Exception as e:
         st.warning(f"SharePoint read failed; falling back to local metadata where possible. Details: {e}")
         return None
 
 def sharepoint_lookup_record_ids(record_ids: List[str]) -> pd.DataFrame:
-    """Fetch a small list of records by RecordId (loops one-by-one using CAML)."""
+    """Fetch a small list of records by RecordId (one-by-one)."""
     out = []
     for rid in record_ids:
         row = sharepoint_fetch_by_record_id(rid)
@@ -344,6 +331,17 @@ def to_title_case_words(s: str) -> str:
 # ========== UI ==========
 st.set_page_config(page_title="AI4KM - Local RAG", page_icon="💡", layout="wide")
 
+def _reset_ingest_state():
+    st.session_state.pop("ing_meta", None)
+    st.session_state.pop("ing_corpus", None)
+    st.session_state.pop("ing_ready", None)
+    st.session_state.pop("ing_last_record_id", None)
+
+# init keys once
+for k in ["ing_meta", "ing_corpus", "ing_ready", "ing_last_record_id"]:
+    if k not in st.session_state:
+        st.session_state[k] = None
+
 if "mode" not in st.session_state:
     st.session_state.mode = None
 
@@ -363,82 +361,86 @@ st.divider()
 if st.session_state.mode == "ingest":
     st.subheader("Data Ingestion Mode")
 
-    with st.form("ingestion_form"):
-        email = st.text_input("Amgen email address", placeholder="jdoe@amgen.com").strip().lower()
-        site = st.text_input("Site (3-letter code)", placeholder="e.g., ASM").strip().upper()
-        function = to_title_case_words(st.text_input("Function/Department (nice case)", placeholder="Digital Technology & Innovation"))
-        files = st.file_uploader("Attach reference file(s)", accept_multiple_files=True,
-                                 type=["pdf","docx","xlsx","xls","txt"])
+    # Show the form only if we are not in the "confirm" step
+    if not st.session_state.ing_ready:
+        with st.form("ingestion_form"):
+            email = st.text_input("Amgen email address", placeholder="jdoe@amgen.com").strip().lower()
+            site = st.text_input("Site (3-letter code)", placeholder="e.g., ASM").strip().upper()
+            function = to_title_case_words(
+                st.text_input("Function/Department (nice case)", placeholder="Digital Technology & Innovation")
+            )
+            files = st.file_uploader(
+                "Attach reference file(s)", accept_multiple_files=True,
+                type=["pdf","docx","xlsx","xls","txt"]
+            )
+            submitted = st.form_submit_button("Process")
 
-        submitted = st.form_submit_button("Process")
-
-    if submitted:
-        # validations
-        if not AMGEN_EMAIL_RE.match(email):
-            st.error("Please enter a valid Amgen email (…@amgen.com).")
-            st.stop()
-        if not SITE_RE.match(site):
-            st.error("Site must be a 3-letter code.")
-            st.stop()
-        if not function:
-            st.error("Function/Department is required.")
-            st.stop()
-        if not files:
-            st.error("Please attach at least one file.")
-            st.stop()
-
-        with st.spinner("Reading and consolidating files…"):
-            corpus = consolidate_files(files)
-            if not corpus.strip():
-                st.error("No readable text found in the uploaded files.")
+        if submitted:
+            # validations
+            if not AMGEN_EMAIL_RE.match(email):
+                st.error("Please enter a valid Amgen email (…@amgen.com).")
+                st.stop()
+            if not SITE_RE.match(site):
+                st.error("Site must be a 3-letter code.")
+                st.stop()
+            if not function:
+                st.error("Function/Department is required.")
+                st.stop()
+            if not files:
+                st.error("Please attach at least one file.")
                 st.stop()
 
-        with st.spinner("Generating Title, Content Summary and Benefits via LLM…"):
-            meta = llm_structured_extract(corpus, email, function, site)
+            with st.spinner("Reading and consolidating files…"):
+                corpus = consolidate_files(files)
+                if not corpus.strip():
+                    st.error("No readable text found in the uploaded files.")
+                    st.stop()
 
-        # Show preview
+            with st.spinner("Generating Title, Content Summary and Benefits via LLM…"):
+                meta = llm_structured_extract(corpus, email, function, site)
+
+            # Persist results for the confirmation step on the next rerun
+            st.session_state.ing_corpus = corpus
+            st.session_state.ing_meta = meta
+            st.session_state.ing_ready = True
+            st.rerun()
+
+    # Confirmation step (survives reruns)
+    else:
+        meta = st.session_state.ing_meta or {}
         st.success("Draft extracted. Please review:")
-        st.write(f"**Title**: {meta['Title']}")
+        st.write(f"**Title**: {meta.get('Title','')}")
         st.write("**Content Summary**")
-        st.write(meta["ContentSummary"])
+        st.write(meta.get("ContentSummary",""))
         st.write("**Benefits**")
-        st.write(meta["Benefits"])
+        st.write(meta.get("Benefits",""))
 
-        # Confirmation loop
         st.info("Do you want to submit a new knowledge asset?")
         coly, coln = st.columns(2)
-        with coly:
-            yes = st.button("Yes — Submit")
-        with coln:
-            no = st.button("No — Cancel")
+        yes = coly.button("Yes — Submit", key="yes_submit")
+        no  = coln.button("No — Cancel", key="no_cancel")
 
         if yes:
             record_id = str(uuid.uuid4())
-
+            corpus = st.session_state.ing_corpus or ""
             with st.spinner("Creating embedding and saving to vector DB…"):
-                # Build a single representative document string (truncate if extremely long)
-                doc_for_vector = corpus
-                if len(doc_for_vector) > 200000:   # simple guard
-                    doc_for_vector = doc_for_vector[:200000]
-
+                doc_for_vector = corpus[:200000] if len(corpus) > 200000 else corpus
                 vec = embed_text(doc_for_vector)
-                # 1:1 mapping: exactly one vector per record
+
+                # 1:1 mapping
                 upsert_asset_vector(
                     record_id=record_id,
                     text=doc_for_vector,
                     metadata={
-                        "Title": meta["Title"],
-                        "ContentOwner": meta["ContentOwner"],
-                        "Function": meta["Function"],
-                        "Site": meta["Site"]
+                        "Title": meta.get("Title",""),
+                        "ContentOwner": meta.get("ContentOwner",""),
+                        "Function": meta.get("Function",""),
+                        "Site": meta.get("Site","")
                     },
                     vector=vec
                 )
 
-            row = {
-                "RecordId": record_id,
-                **meta
-            }
+            row = {"RecordId": record_id, **meta}
 
             saved = False
             if sharepoint_available():
@@ -450,14 +452,17 @@ if st.session_state.mode == "ingest":
                 local_meta_upsert(row)
                 st.info("Saved locally (CSV). You can switch to SharePoint later by setting SHAREPOINT_ENABLED=true.")
 
+            st.session_state.ing_last_record_id = record_id
+            _reset_ingest_state()  # clear confirm state
             st.success(f"New knowledge asset submitted with RecordId: {record_id}")
 
-            again = st.button("Ingest another?")
-            if again:
+            # Offer to ingest another
+            if st.button("Ingest another?", key="ingest_again"):
                 st.session_state.mode = "ingest"
                 st.rerun()
 
         if no:
+            _reset_ingest_state()
             st.session_state.mode = None
             st.rerun()
 
@@ -501,22 +506,32 @@ if st.session_state.mode == "search":
             rec_ids = [r["RecordId"] for r in rows]
             
             if sharepoint_available():
-                # Prefer SharePoint as the source of truth
                 sp_extra = sharepoint_lookup_record_ids(rec_ids)
-                # Merge on RecordId (left join to preserve the ranking/similarity)
-                out = df.merge(sp_extra.drop(columns=["ItemId"], errors="ignore"),
-                               on="RecordId", how="left", suffixes=("",""))
-                # If some are still missing (e.g., not found on SP), try to backfill from local CSV
-                missing = out["ContentSummary"].isna()
-                if missing.any():
-                    local_extra = local_meta_lookup(out.loc[missing, "RecordId"].tolist())
-                    out.loc[missing, ["Title","ContentOwner","Function","Site","ContentSummary","Benefits"]] = \
-                        out.loc[missing].merge(local_extra, on="RecordId", how="left")[["Title_y","ContentOwner_y","Function_y","Site_y","ContentSummary","Benefits"]].values
+            
+                # rename overlapping columns so pandas doesn't complain
+                sp_extra = sp_extra.rename(columns={
+                    "Title": "Title_sp",
+                    "ContentOwner": "ContentOwner_sp",
+                    "Function": "Function_sp",
+                    "Site": "Site_sp"
+                })
+            
+                # bring only the fields we actually need from SP
+                sp_cols = ["RecordId", "ContentSummary", "Benefits", "Title_sp", "ContentOwner_sp", "Function_sp", "Site_sp"]
+                sp_extra = sp_extra[sp_cols] if not sp_extra.empty else sp_extra
+            
+                # left-merge preserves ranking order from df
+                out = df.merge(sp_extra, on="RecordId", how="left")
+            
+                # optional: if your df lacked some fields, backfill from SP
+                # out["Title"] = out["Title"].where(out["Title"].notna() & (out["Title"] != ""), out["Title_sp"])
+                # out["ContentOwner"] = out["ContentOwner"].fillna(out["ContentOwner_sp"])
+                # out["Function"] = out["Function"].fillna(out["Function_sp"])
+                # out["Site"] = out["Site"].fillna(out["Site_sp"])
+            
             else:
-                # No SharePoint → use local CSV entirely
                 local_extra = local_meta_lookup(rec_ids)
                 out = df.merge(local_extra, on="RecordId", how="left", suffixes=("",""))
-
 
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
