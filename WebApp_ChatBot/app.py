@@ -267,6 +267,40 @@ def sharepoint_lookup_record_ids(record_ids: List[str]) -> pd.DataFrame:
         columns=["RecordId","Title","ContentSummary","Benefits","ContentOwner","Function","Site","ItemId"]
     )
 
+def generate_answer(query: str, docs: List[Dict[str, Any]]) -> str:
+    """
+    Use LLM to synthesize an answer from top-k retrieved documents.
+    Each doc dict should have 'Title', 'ContentSummary', 'Benefits'.
+    """
+    if not docs:
+        return "No relevant documents found to answer your question."
+
+    context_parts = []
+    for i, d in enumerate(docs, start=1):
+        context_parts.append(
+            f"[Doc {i}] Title: {d.get('Title','')}\n"
+            f"Summary: {d.get('ContentSummary','')}\n"
+            f"Benefits: {d.get('Benefits','')}\n"
+        )
+    context = "\n\n".join(context_parts)
+
+    system_prompt = (
+        "You are an expert assistant that answers user questions based on provided enterprise knowledge assets. "
+        "Use the context faithfully. If the context does not contain the answer, say you could not find it. "
+        "Do not invent details."
+    )
+    user_prompt = f"User query:\n{query}\n\nContext:\n{context}\n\nAnswer the query in 1-2 paragraphs."
+
+    r = oai.chat.completions.create(
+        model=GEN_MODEL,
+        messages=[
+            {"role":"system","content":system_prompt},
+            {"role":"user","content":user_prompt}
+        ],
+        temperature=0.3
+    )
+    return r.choices[0].message.content.strip()
+
 # ========== File parsers ==========
 from PyPDF2 import PdfReader
 from docx import Document
@@ -592,6 +626,15 @@ if st.session_state.mode == "search":
             else:
                 local_extra = local_meta_lookup(rec_ids)
                 out = df.merge(local_extra, on="RecordId", how="left", suffixes=("",""))
+
+            # Right after merging into `out`
+            doc_contexts = out.to_dict(orient="records")
+            
+            with st.spinner("Generating synthesized answer..."):
+                answer = generate_answer(query, doc_contexts)
+            
+            st.write("### Synthesized Answer")
+            st.write(answer)
 
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
