@@ -4,7 +4,7 @@ set -euo pipefail
 #ENV_NAME="ehss"
 #APP_PATH="$HOME/Desktop/GITHUB/EHSS_Hazardous_Waste_Automation/app.py"
 ENV_NAME="ai4km"
-APP_PATH="$HOME/Desktop/GITHUB/ai_km_poc/WebApp_ChatBot/app_km_launcher.py"
+APP_PATH="$HOME/Desktop/GITHUB/ai_km_poc/WebApp_ChatBot/app.py"
 PORT=8501
 
 # Load conda into this shell

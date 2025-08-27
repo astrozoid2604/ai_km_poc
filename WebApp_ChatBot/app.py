@@ -13,6 +13,7 @@ import numpy as np
 
 from dotenv import load_dotenv
 load_dotenv()
+os.chdir('/Users/jameslim/Desktop/GITHUB/ai_km_poc/WebApp_ChatBot')
 
 # ========== Config ==========
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
