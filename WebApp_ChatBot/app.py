@@ -271,6 +271,8 @@ def sharepoint_lookup_record_ids(record_ids: List[str]) -> pd.DataFrame:
 from PyPDF2 import PdfReader
 from docx import Document
 import tempfile
+from pptx import Presentation
+
 
 def read_pdf(file) -> str:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
@@ -306,6 +308,61 @@ def read_xlsx(file) -> str:
 def read_txt(file) -> str:
     return file.read().decode("utf-8", errors="ignore")
 
+def read_pptx(file) -> str:
+    """
+    Extracts readable text from a .pptx:
+      - slide body text (text frames)
+      - table cell text
+      - speaker notes (if present)
+    Returns a single consolidated string.
+    """
+    import tempfile
+
+    # Save uploaded file to a temp path for python-pptx
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pptx") as tmp:
+        tmp.write(file.read())
+        tmp.flush()
+        path = tmp.name
+
+    prs = Presentation(path)
+    parts = []
+
+    for idx, slide in enumerate(prs.slides, start=1):
+        parts.append(f"## Slide {idx}")
+
+        # 1) Text frames on shapes
+        for shape in slide.shapes:
+            # Text frames (titles, content placeholders, text boxes)
+            if hasattr(shape, "has_text_frame") and shape.has_text_frame:
+                tf = shape.text_frame
+                for para in tf.paragraphs:
+                    # Joins all runs in paragraph to preserve inline fragments
+                    text = "".join(run.text for run in para.runs).strip()
+                    if text:
+                        parts.append(text)
+
+            # 2) Tables
+            if hasattr(shape, "has_table") and shape.has_table:
+                tbl = shape.table
+                for row in tbl.rows:
+                    cells = [cell.text.strip() for cell in row.cells]
+                    row_text = " | ".join([c for c in cells if c])
+                    if row_text:
+                        parts.append(row_text)
+
+        # 3) Speaker notes (if any)
+        try:
+            notes = slide.notes_slide.notes_text_frame.text
+            if notes and notes.strip():
+                parts.append("### Notes")
+                parts.append(notes.strip())
+        except Exception:
+            # No notes slide attached or structure differs; ignore
+            pass
+
+    # Final consolidated text
+    return "\n".join([p for p in parts if p.strip()])
+
 def consolidate_files(files) -> str:
     corpus_parts = []
     for f in files:
@@ -318,6 +375,8 @@ def consolidate_files(files) -> str:
             corpus_parts.append(read_xlsx(f))
         elif name.endswith(".txt"):
             corpus_parts.append(read_txt(f))
+        elif name.endswith(".pptx"):
+            corpus_parts.append(read_pptx(f))
         else:
             corpus_parts.append(read_txt(f))  # naive fallback
     return "\n\n".join([p for p in corpus_parts if p.strip()])
@@ -372,7 +431,7 @@ if st.session_state.mode == "ingest":
             )
             files = st.file_uploader(
                 "Attach reference file(s)", accept_multiple_files=True,
-                type=["pdf","docx","xlsx","xls","txt"]
+                type=["pdf","docx","xlsx","xls","txt","pptx"]
             )
             submitted = st.form_submit_button("Process")
 

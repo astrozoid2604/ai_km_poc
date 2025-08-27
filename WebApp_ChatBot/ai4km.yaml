@@ -27,6 +27,7 @@ dependencies:
       - python-dotenv
       - pydantic
       - cryptography
+      - python-pptx
       # Optional if you later want API endpoints
       - fastapi
       - uvicorn
