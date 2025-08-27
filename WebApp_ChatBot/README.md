@@ -19,6 +19,13 @@
 └── vectorstore
 </code>
 
+
+This guide explains how to configure your macOS environment to deploy RAG chatbot locally for the purpose of implementing Data Ingestion mode and Intelligent Search mode for Knowledge Marketplace.
+
+[YouTube Video LINK](https://youtu.be/Q1tb7dmULoA)
+
+[![YouTube Thumbnail](https://img.youtube.com/vi/Q1tb7dmULoA/hqdefault.jpg)](https://youtu.be/Q1tb7dmULoA)
+
 ---
 
 ## 0. Prerequisites (once)
