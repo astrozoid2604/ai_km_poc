@@ -3,7 +3,6 @@ import os
 import io
 import re
 import json
-import time
 import uuid
 from typing import List, Dict, Any
 
@@ -13,7 +12,10 @@ import numpy as np
 
 from dotenv import load_dotenv
 load_dotenv()
+
+# (optional) set your working dir if you need it
 os.chdir('/Users/jameslim/Desktop/GITHUB/ai_km_poc/WebApp_ChatBot')
+
 
 # ========== Config ==========
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -24,8 +26,8 @@ VECTOR_DB_PATH = os.getenv("VECTOR_DB_PATH", ".chroma")
 SHAREPOINT_ENABLED = os.getenv("SHAREPOINT_ENABLED", "false").lower() == "true"
 
 # SharePoint (certificate-based app-only)
-SP_TENANT      = os.getenv("SP_TENANT")             # e.g., yourtenant.onmicrosoft.com OR tenant GUID
-SP_SITE_URL    = os.getenv("SP_SITE_URL")           # e.g., https://<tenant>.sharepoint.com/sites/ai4km
+SP_TENANT      = os.getenv("SP_TENANT")             # yourtenant.onmicrosoft.com OR tenant GUID
+SP_SITE_URL    = os.getenv("SP_SITE_URL")           # https://<tenant>.sharepoint.com/sites/ai4km
 SP_LIST_NAME   = os.getenv("SP_LIST_NAME")          # e.g., AI4KM Knowledge Assets
 SP_CLIENT_ID   = os.getenv("SP_CLIENT_ID")          # App (client) ID
 SP_CERT_THUMB  = os.getenv("SP_CERT_THUMBPRINT")    # UPPERCASE hex, no colons
@@ -42,36 +44,34 @@ def embed_text(text: str) -> List[float]:
     resp = oai.embeddings.create(model=EMBED_MODEL, input=[text])
     return resp.data[0].embedding
 
+def cosine_sim(a: List[float] | None, b: List[float] | None) -> float:
+    if not a or not b:
+        return 0.0
+    va = np.array(a, dtype=np.float32)
+    vb = np.array(b, dtype=np.float32)
+    na = np.linalg.norm(va); nb = np.linalg.norm(vb)
+    if na == 0 or nb == 0:
+        return 0.0
+    return float(np.dot(va, vb) / (na * nb))
+
 def _coerce_json(s: str) -> dict:
-    """Make a best-effort to parse JSON returned by an LLM."""
+    """Best-effort to parse JSON returned by an LLM."""
     if not isinstance(s, str):
         raise ValueError("Expected string")
     s = s.strip()
-
-    # Strip Markdown code fences
     if s.startswith("```"):
-        # remove first fence line
         first_nl = s.find("\n")
         if first_nl != -1:
             s = s[first_nl+1:]
         if s.endswith("```"):
-            s = s[: -3].strip()
-
-    # Keep only the outermost JSON object
-    start = s.find("{")
-    end = s.rfind("}")
+            s = s[:-3].strip()
+    start = s.find("{"); end = s.rfind("}")
     if start != -1 and end != -1 and end > start:
         s = s[start:end+1]
-
-    # Normalize smart quotes/apostrophes to ASCII
-    s = (s
-         .replace("\u201c", '"').replace("\u201d", '"')  # “ ”
-         .replace("\u2018", "'").replace("\u2019", "'")) # ‘ ’
-
-    # Remove trailing commas before a closing brace/bracket
-    import re
-    s = re.sub(r",\s*(\}|\])", r"\1", s)
-
+    s = (s.replace("\u201c", '"').replace("\u201d", '"')
+           .replace("\u2018", "'").replace("\u2019", "'"))
+    import re as _re
+    s = _re.sub(r",\s*(\}|\])", r"\1", s)
     return json.loads(s)
 
 def llm_structured_extract(corpus: str, content_owner: str, function: str, site: str) -> Dict[str, str]:
@@ -82,14 +82,13 @@ def llm_structured_extract(corpus: str, content_owner: str, function: str, site:
         "3) Benefits: 1–2 cohesive paragraphs highlighting business benefits\n"
         "Return a strict JSON object with keys: Title, ContentSummary, Benefits."
     )
-    user = f"CORPUS:\n{corpus[:12000]}"  # keep prompt safe
+    user = f"CORPUS:\n{corpus[:12000]}"
     r = oai.chat.completions.create(
         model=GEN_MODEL,
         messages=[{"role":"system","content":sys},{"role":"user","content":user}],
         temperature=0.2
     )
     text = r.choices[0].message.content
-    # simple JSON parse attempt
     try:
         j = _coerce_json(text)
         return {
@@ -101,7 +100,6 @@ def llm_structured_extract(corpus: str, content_owner: str, function: str, site:
             "Site": site,
         }
     except Exception:
-        # fallback minimal
         return {
             "Title": "Untitled Knowledge Asset",
             "ContentSummary": text.strip()[:2000],
@@ -116,7 +114,6 @@ import chromadb
 try:
     client = chromadb.PersistentClient(path=VECTOR_DB_PATH)
 except TypeError:
-    # compatibility with older chromadb API
     from chromadb.config import Settings
     client = chromadb.Client(Settings(persist_directory=VECTOR_DB_PATH))
 
@@ -126,8 +123,6 @@ collection = client.get_or_create_collection(
 )
 
 def upsert_asset_vector(record_id: str, text: str, metadata: Dict[str, Any], vector: List[float]):
-    # Store exactly 1 vector per record to preserve 1:1 mapping.
-    # If existing, delete then re-add (Chroma add() does not update).
     try:
         collection.delete(ids=[record_id])
     except Exception:
@@ -141,23 +136,19 @@ def upsert_asset_vector(record_id: str, text: str, metadata: Dict[str, Any], vec
 
 def search_topk(query: str, k: int = 3):
     qvec = embed_text(query)
-
-    # Do NOT include "ids" here; Chroma returns ids regardless.
     res = collection.query(
         query_embeddings=[qvec],
         n_results=k,
-        include=["documents", "metadatas", "distances"]  # valid keys only
+        include=["documents", "metadatas", "distances"]
     )
-
-    ids         = (res.get("ids") or [[]])[0]
-    documents   = (res.get("documents") or [[]])[0]
-    metadatas   = (res.get("metadatas") or [[]])[0]
-    distances   = (res.get("distances") or [[]])[0]
-
+    ids       = (res.get("ids") or [[]])[0]
+    documents = (res.get("documents") or [[]])[0]
+    metadatas = (res.get("metadatas") or [[]])[0]
+    distances = (res.get("distances") or [[]])[0]
     out = []
     for i in range(len(ids)):
         dist = float(distances[i]) if i < len(distances) and distances[i] is not None else None
-        sim  = (1.0 - dist) if dist is not None else None  # cosine similarity approx
+        sim  = (1.0 - dist) if dist is not None else None
         out.append({
             "RecordId": ids[i],
             "Document": documents[i] if i < len(documents) else None,
@@ -184,12 +175,10 @@ def local_meta_lookup(record_ids: List[str]) -> pd.DataFrame:
 
 # ========== SharePoint Client (certificate app-only) ==========
 def sharepoint_available() -> bool:
-    # All must be present to enable SharePoint path
     needed = [SP_SITE_URL, SP_LIST_NAME, SP_CLIENT_ID, SP_TENANT, SP_CERT_THUMB, SP_CERT_PEM]
     return SHAREPOINT_ENABLED and all(needed)
 
 def _get_sp_ctx():
-    """Return a ClientContext authenticated via client certificate."""
     from office365.sharepoint.client_context import ClientContext
     return ClientContext(SP_SITE_URL).with_client_certificate(
         tenant=SP_TENANT,
@@ -199,14 +188,10 @@ def _get_sp_ctx():
     )
 
 def sharepoint_add_item(row: Dict[str, str]) -> bool:
-    """
-    Write one item into the AI4KM Knowledge Assets list.
-    Expects keys: Title, ContentSummary, Benefits, ContentOwner, Function, Site, RecordId
-    """
     try:
         ctx = _get_sp_ctx()
         sp_list = ctx.web.lists.get_by_title(SP_LIST_NAME)
-        item_properties = {
+        sp_list.add_item({
             "Title":          row["Title"],
             "ContentSummary": row["ContentSummary"],
             "Benefits":       row["Benefits"],
@@ -214,34 +199,27 @@ def sharepoint_add_item(row: Dict[str, str]) -> bool:
             "Function":       row["Function"],
             "Site":           row["Site"],
             "RecordId":       row["RecordId"],
-        }
-        item = sp_list.add_item(item_properties)
-        ctx.execute_query()  # commit
+        })
+        ctx.execute_query()
         return True
     except Exception as e:
         st.warning(f"SharePoint write failed, storing locally instead. Details: {e}")
         return False
 
 def sharepoint_fetch_by_record_id(record_id: str) -> Dict[str, Any] | None:
-    """Fetch one item by RecordId using OData $filter (no CAML)."""
     try:
         ctx = _get_sp_ctx()
         sp_list = ctx.web.lists.get_by_title(SP_LIST_NAME)
-
         items = (
             sp_list.items
-            .select(["Id","Title","RecordId","ContentSummary","Benefits","ContentOwner","Function","Site"])  # ← list, not string
+            .select(["Id","Title","RecordId","ContentSummary","Benefits","ContentOwner","Function","Site"])
             .filter(f"RecordId eq '{record_id}'")
             .top(1)
         )
-        ctx.load(items)
-        ctx.execute_query()
-
+        ctx.load(items); ctx.execute_query()
         if len(items) == 0:
             return None
-
-        it = items[0]
-        p = it.properties
+        p = items[0].properties
         return {
             "RecordId":       p.get("RecordId"),
             "Title":          p.get("Title"),
@@ -257,7 +235,6 @@ def sharepoint_fetch_by_record_id(record_id: str) -> Dict[str, Any] | None:
         return None
 
 def sharepoint_lookup_record_ids(record_ids: List[str]) -> pd.DataFrame:
-    """Fetch a small list of records by RecordId (one-by-one)."""
     out = []
     for rid in record_ids:
         row = sharepoint_fetch_by_record_id(rid)
@@ -267,39 +244,183 @@ def sharepoint_lookup_record_ids(record_ids: List[str]) -> pd.DataFrame:
         columns=["RecordId","Title","ContentSummary","Benefits","ContentOwner","Function","Site","ItemId"]
     )
 
-def generate_answer(query: str, docs: List[Dict[str, Any]]) -> str:
+# ========== Generation helpers ==========
+def _normalize_doc_rows(df: pd.DataFrame) -> List[Dict[str, Any]]:
     """
-    Use LLM to synthesize an answer from top-k retrieved documents.
-    Each doc dict should have 'Title', 'ContentSummary', 'Benefits'.
+    Produce a clean, consistent schema per doc so the LLM always sees
+    Title/ContentSummary/Benefits/ContentOwner/Function/Site.
+    Prefers *_sp (SharePoint-enriched) columns when available.
     """
-    if not docs:
-        return "No relevant documents found to answer your question."
+    records = df.to_dict(orient="records")
+    out = []
+    for r in records:
+        out.append({
+            "RecordId":       r.get("RecordId", ""),
+            "Title":          (r.get("Title") or r.get("Title_sp") or "").strip(),
+            "ContentSummary": (r.get("ContentSummary") or "").strip(),
+            "Benefits":       (r.get("Benefits") or "").strip(),
+            "ContentOwner":   (r.get("ContentOwner") or r.get("ContentOwner_sp") or "").strip(),
+            "Function":       (r.get("Function") or r.get("Function_sp") or "").strip(),
+            "Site":           (r.get("Site") or r.get("Site_sp") or "").strip(),
+        })
+    return out
 
-    context_parts = []
-    for i, d in enumerate(docs, start=1):
-        context_parts.append(
-            f"[Doc {i}] Title: {d.get('Title','')}\n"
-            f"Summary: {d.get('ContentSummary','')}\n"
-            f"Benefits: {d.get('Benefits','')}\n"
-        )
-    context = "\n\n".join(context_parts)
+def _maybe_answer_from_metadata(user_query: str, docs: List[Dict[str, Any]]) -> str | None:
+    q = user_query.lower()
+
+    def unique_nonempty(field: str) -> list[str]:
+        vals = [(d.get(field) or "").strip() for d in docs]
+        vals = [v for v in vals if v]
+        return sorted(set(vals))
+
+    # Site questions
+    if "which site" in q or "what site" in q or "site implemented" in q or "site" in q:
+        sites = unique_nonempty("Site")
+        if sites:
+            if len(sites) == 1:
+                return f"The improvement was implemented at **{sites[0]}**."
+            else:
+                return "The improvement appears in these sites: " + ", ".join(f"**{s}**" for s in sites) + "."
+
+    # Owner questions
+    if "owner" in q or "content owner" in q or "who owns" in q:
+        owners = unique_nonempty("ContentOwner")
+        if owners:
+            if len(owners) == 1:
+                return f"The content owner is **{owners[0]}**."
+            else:
+                return "Relevant content owners: " + ", ".join(f"**{o}**" for o in owners) + "."
+
+    # Function/department questions
+    if "function" in q or "department" in q:
+        funcs = unique_nonempty("Function")
+        if funcs:
+            if len(funcs) == 1:
+                return f"The function/department is **{funcs[0]}**."
+            else:
+                return "Relevant functions: " + ", ".join(f"**{f}**" for f in funcs) + "."
+
+    return None
+
+def generate_answer_with_history(query: str,
+                                 docs: List[Dict[str, Any]],
+                                 history: List[Dict[str, str]] | None = None,
+                                 max_history_turns: int = 6) -> str:
+    """
+    Answer with LLM using retrieved docs + recent chat history.
+    Includes metadata fields (Site, ContentOwner, Function) in context.
+    """
+    # If the metadata alone can answer, do it deterministically
+    meta_answer = _maybe_answer_from_metadata(query, docs)
+    if meta_answer:
+        return meta_answer
+
+    # Build rich context for the LLM
+    if not docs:
+        base_context = "No relevant documents found to answer your question."
+    else:
+        parts = []
+        for i, d in enumerate(docs, start=1):
+            parts.append(
+                f"[Doc {i}] RecordId: {d.get('RecordId','')}\n"
+                f"Title: {d.get('Title','')}\n"
+                f"Site: {d.get('Site','')}\n"
+                f"Function: {d.get('Function','')}\n"
+                f"ContentOwner: {d.get('ContentOwner','')}\n"
+                f"Summary: {d.get('ContentSummary','')}\n"
+                f"Benefits: {d.get('Benefits','')}\n"
+            )
+        base_context = "\n\n".join(parts)
+
+    history = history or []
+    clipped = history[-max_history_turns:]
 
     system_prompt = (
-        "You are an expert assistant that answers user questions based on provided enterprise knowledge assets. "
-        "Use the context faithfully. If the context does not contain the answer, say you could not find it. "
-        "Do not invent details."
+        "You are an expert enterprise assistant.\n"
+        "Use ONLY the provided context from knowledge assets. If the context is insufficient, say so.\n"
+        "When the user asks about fields like Site, Function, or ContentOwner, extract them directly from the context.\n"
+        "Be concise and factual (1–2 short paragraphs). Do not invent details."
     )
-    user_prompt = f"User query:\n{query}\n\nContext:\n{context}\n\nAnswer the query in 1-2 paragraphs."
 
-    r = oai.chat.completions.create(
-        model=GEN_MODEL,
-        messages=[
-            {"role":"system","content":system_prompt},
-            {"role":"user","content":user_prompt}
-        ],
-        temperature=0.3
-    )
+    msgs = [{"role": "system", "content": system_prompt}]
+    msgs.append({"role": "assistant", "content": f"Context for answering:\n{base_context}"})
+    for m in clipped:
+        msgs.append({"role": m["role"], "content": m["content"]})
+    msgs.append({"role": "user", "content": query})
+
+    r = oai.chat.completions.create(model=GEN_MODEL, messages=msgs, temperature=0.2)
     return r.choices[0].message.content.strip()
+
+def run_rag_turn(user_query: str,
+                 prev_query_vec: List[float] | None,
+                 context_buffer: List[Dict[str, Any]],
+                 topic_shift_threshold: float = 0.60) -> tuple[str, pd.DataFrame, bytes, List[float], List[Dict[str, Any]]]:
+    """
+    One conversational RAG turn with topic-shift detection and context aggregation.
+    Returns: (answer, out_df, excel_bytes, curr_query_vec, updated_context_buffer)
+    """
+    # Embedding for topic-shift detection
+    curr_vec = embed_text(user_query)
+    if prev_query_vec is None or cosine_sim(prev_query_vec, curr_vec) < topic_shift_threshold:
+        # New topic → reset buffer
+        context_buffer = []
+
+    # --- retrieval
+    hits = search_topk(user_query, k=3)
+    if not hits:
+        empty_df = pd.DataFrame(columns=["RecordId","Similarity","Title","ContentOwner","Function","Site"])
+        return ("I couldn't find relevant knowledge assets for that query.", empty_df, b"", curr_vec, context_buffer)
+
+    rows = []
+    for h in hits:
+        m = h["Metadata"]
+        rows.append({
+            "RecordId": h["RecordId"],
+            "Similarity": round(h["Score"], 4) if h["Score"] is not None else None,
+            "Title": m.get("Title",""),
+            "ContentOwner": m.get("ContentOwner",""),
+            "Function": m.get("Function",""),
+            "Site": m.get("Site","")
+        })
+    df = pd.DataFrame(rows)
+
+    # --- enrichment
+    rec_ids = [r["RecordId"] for r in rows]
+    if sharepoint_available():
+        sp_extra = sharepoint_lookup_record_ids(rec_ids)
+        sp_extra = sp_extra.rename(columns={
+            "Title": "Title_sp",
+            "ContentOwner": "ContentOwner_sp",
+            "Function": "Function_sp",
+            "Site": "Site_sp"
+        })
+        sp_cols = ["RecordId", "ContentSummary", "Benefits", "Title_sp", "ContentOwner_sp", "Function_sp", "Site_sp"]
+        sp_extra = sp_extra[sp_cols] if not sp_extra.empty else sp_extra
+        out = df.merge(sp_extra, on="RecordId", how="left")
+    else:
+        local_extra = local_meta_lookup(rec_ids)
+        out = df.merge(local_extra, on="RecordId", how="left", suffixes=("",""))
+
+    # --- normalize docs for LLM context (adds Site/Owner/Function reliably)
+    norm_docs_new = _normalize_doc_rows(out)
+
+    # --- update context buffer (dedupe by RecordId, cap size = 6)
+    combined = norm_docs_new + (context_buffer or [])
+    dedup = {}
+    for d in combined:
+        dedup[d.get("RecordId")] = d
+    updated_buffer = list(dedup.values())[:6]
+
+    # --- generation (now sees metadata too)
+    answer = generate_answer_with_history(user_query, updated_buffer, st.session_state.chat_msgs)
+
+    # --- Excel export for THIS TURN
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        out.to_excel(writer, index=False, sheet_name="Matches")
+    excel_bytes = buffer.getvalue()
+
+    return answer, out, excel_bytes, curr_vec, updated_buffer
 
 # ========== File parsers ==========
 from PyPDF2 import PdfReader
@@ -307,11 +428,9 @@ from docx import Document
 import tempfile
 from pptx import Presentation
 
-
 def read_pdf(file) -> str:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        tmp.write(file.read())
-        tmp.flush()
+        file.seek(0); tmp.write(file.read()); tmp.flush()
         reader = PdfReader(tmp.name)
         texts = []
         for page in reader.pages:
@@ -323,15 +442,13 @@ def read_pdf(file) -> str:
 
 def read_docx(file) -> str:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
-        tmp.write(file.read())
-        tmp.flush()
+        file.seek(0); tmp.write(file.read()); tmp.flush()
         doc = Document(tmp.name)
         return "\n".join([p.text for p in doc.paragraphs])
 
 def read_xlsx(file) -> str:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
-        tmp.write(file.read())
-        tmp.flush()
+        file.seek(0); tmp.write(file.read()); tmp.flush()
         df = pd.read_excel(tmp.name, sheet_name=None)
         parts = []
         for name, sdf in df.items():
@@ -340,42 +457,24 @@ def read_xlsx(file) -> str:
         return "\n".join(parts)
 
 def read_txt(file) -> str:
+    file.seek(0)
     return file.read().decode("utf-8", errors="ignore")
 
 def read_pptx(file) -> str:
-    """
-    Extracts readable text from a .pptx:
-      - slide body text (text frames)
-      - table cell text
-      - speaker notes (if present)
-    Returns a single consolidated string.
-    """
-    import tempfile
-
-    # Save uploaded file to a temp path for python-pptx
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pptx") as tmp:
-        tmp.write(file.read())
-        tmp.flush()
+        file.seek(0); tmp.write(file.read()); tmp.flush()
         path = tmp.name
-
     prs = Presentation(path)
     parts = []
-
     for idx, slide in enumerate(prs.slides, start=1):
         parts.append(f"## Slide {idx}")
-
-        # 1) Text frames on shapes
         for shape in slide.shapes:
-            # Text frames (titles, content placeholders, text boxes)
             if hasattr(shape, "has_text_frame") and shape.has_text_frame:
                 tf = shape.text_frame
                 for para in tf.paragraphs:
-                    # Joins all runs in paragraph to preserve inline fragments
                     text = "".join(run.text for run in para.runs).strip()
                     if text:
                         parts.append(text)
-
-            # 2) Tables
             if hasattr(shape, "has_table") and shape.has_table:
                 tbl = shape.table
                 for row in tbl.rows:
@@ -383,18 +482,12 @@ def read_pptx(file) -> str:
                     row_text = " | ".join([c for c in cells if c])
                     if row_text:
                         parts.append(row_text)
-
-        # 3) Speaker notes (if any)
         try:
             notes = slide.notes_slide.notes_text_frame.text
             if notes and notes.strip():
-                parts.append("### Notes")
-                parts.append(notes.strip())
+                parts.append("### Notes"); parts.append(notes.strip())
         except Exception:
-            # No notes slide attached or structure differs; ignore
             pass
-
-    # Final consolidated text
     return "\n".join([p for p in parts if p.strip()])
 
 def consolidate_files(files) -> str:
@@ -431,10 +524,23 @@ def _reset_ingest_state():
     st.session_state.pop("ing_ready", None)
     st.session_state.pop("ing_last_record_id", None)
 
-# init keys once
+# init keys once (ingestion)
 for k in ["ing_meta", "ing_corpus", "ing_ready", "ing_last_record_id"]:
     if k not in st.session_state:
         st.session_state[k] = None
+
+# chat state (search)
+for k in ["chat_msgs", "last_excel_bytes", "prev_query_vec", "context_buffer"]:
+    if k not in st.session_state:
+        st.session_state[k] = None
+if st.session_state.chat_msgs is None:
+    st.session_state.chat_msgs = []
+if st.session_state.last_excel_bytes is None:
+    st.session_state.last_excel_bytes = b""
+if st.session_state.prev_query_vec is None:
+    st.session_state.prev_query_vec = None
+if st.session_state.context_buffer is None:
+    st.session_state.context_buffer = []
 
 if "mode" not in st.session_state:
     st.session_state.mode = None
@@ -448,6 +554,11 @@ with col1:
 with col2:
     if st.button("Intelligent Search", use_container_width=True):
         st.session_state.mode = "search"
+        # reset chat when (re)entering search
+        st.session_state.chat_msgs = []
+        st.session_state.last_excel_bytes = b""
+        st.session_state.prev_query_vec = None
+        st.session_state.context_buffer = []
 
 st.divider()
 
@@ -455,7 +566,6 @@ st.divider()
 if st.session_state.mode == "ingest":
     st.subheader("Data Ingestion Mode")
 
-    # Show the form only if we are not in the "confirm" step
     if not st.session_state.ing_ready:
         with st.form("ingestion_form"):
             email = st.text_input("Amgen email address", placeholder="jdoe@amgen.com").strip().lower()
@@ -470,44 +580,34 @@ if st.session_state.mode == "ingest":
             submitted = st.form_submit_button("Process")
 
         if submitted:
-            # validations
             if not AMGEN_EMAIL_RE.match(email):
-                st.error("Please enter a valid Amgen email (…@amgen.com).")
-                st.stop()
+                st.error("Please enter a valid Amgen email (…@amgen.com)."); st.stop()
             if not SITE_RE.match(site):
-                st.error("Site must be a 3-letter code.")
-                st.stop()
+                st.error("Site must be a 3-letter code."); st.stop()
             if not function:
-                st.error("Function/Department is required.")
-                st.stop()
+                st.error("Function/Department is required."); st.stop()
             if not files:
-                st.error("Please attach at least one file.")
-                st.stop()
+                st.error("Please attach at least one file."); st.stop()
 
             with st.spinner("Reading and consolidating files…"):
                 corpus = consolidate_files(files)
                 if not corpus.strip():
-                    st.error("No readable text found in the uploaded files.")
-                    st.stop()
+                    st.error("No readable text found in the uploaded files."); st.stop()
 
             with st.spinner("Generating Title, Content Summary and Benefits via LLM…"):
                 meta = llm_structured_extract(corpus, email, function, site)
 
-            # Persist results for the confirmation step on the next rerun
             st.session_state.ing_corpus = corpus
             st.session_state.ing_meta = meta
             st.session_state.ing_ready = True
             st.rerun()
 
-    # Confirmation step (survives reruns)
     else:
         meta = st.session_state.ing_meta or {}
         st.success("Draft extracted. Please review:")
         st.write(f"**Title**: {meta.get('Title','')}")
-        st.write("**Content Summary**")
-        st.write(meta.get("ContentSummary",""))
-        st.write("**Benefits**")
-        st.write(meta.get("Benefits",""))
+        st.write("**Content Summary**"); st.write(meta.get("ContentSummary",""))
+        st.write("**Benefits**"); st.write(meta.get("Benefits",""))
 
         st.info("Do you want to submit a new knowledge asset?")
         coly, coln = st.columns(2)
@@ -520,8 +620,6 @@ if st.session_state.mode == "ingest":
             with st.spinner("Creating embedding and saving to vector DB…"):
                 doc_for_vector = corpus[:200000] if len(corpus) > 200000 else corpus
                 vec = embed_text(doc_for_vector)
-
-                # 1:1 mapping
                 upsert_asset_vector(
                     record_id=record_id,
                     text=doc_for_vector,
@@ -535,128 +633,95 @@ if st.session_state.mode == "ingest":
                 )
 
             row = {"RecordId": record_id, **meta}
-
             saved = False
             if sharepoint_available():
                 st.write("Attempting SharePoint write…")
                 if sharepoint_add_item(row):
                     saved = True
-
             if not saved:
                 local_meta_upsert(row)
                 st.info("Saved locally (CSV). You can switch to SharePoint later by setting SHAREPOINT_ENABLED=true.")
 
-            st.session_state.ing_last_record_id = record_id
-            _reset_ingest_state()  # clear confirm state
+            _reset_ingest_state()
             st.success(f"New knowledge asset submitted with RecordId: {record_id}")
 
-            # Offer to ingest another
             if st.button("Ingest another?", key="ingest_again"):
-                st.session_state.mode = "ingest"
-                st.rerun()
+                st.session_state.mode = "ingest"; st.rerun()
 
         if no:
-            _reset_ingest_state()
-            st.session_state.mode = None
+            _reset_ingest_state(); st.session_state.mode = None; st.rerun()
+
+# ---------- MODE: SEARCH (Conversational RAG) ----------
+if st.session_state.mode == "search":
+    st.subheader("Intelligent Search (Conversational RAG)")
+
+    # Render conversation so far
+    for m in st.session_state.chat_msgs:
+        with st.chat_message(m["role"]):
+            st.write(m["content"])
+            # Per-turn results & per-turn download button
+            if m.get("matches_df") is not None:
+                st.dataframe(m["matches_df"], use_container_width=True)
+            if m.get("excel_bytes"):
+                st.download_button(
+                    "⬇️ Download this turn's Top-3 (Excel)",
+                    data=m["excel_bytes"],
+                    file_name="ai4km_search_results.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key=f"dl_{hash(m['excel_bytes'])}"
+                )
+
+    # Chat input
+    user_input = st.chat_input("Ask about a knowledge asset or topic")
+    if user_input:
+        # User turn
+        st.session_state.chat_msgs.append({"role": "user", "content": user_input})
+        with st.chat_message("user"):
+            st.write(user_input)
+
+        # Assistant turn
+        with st.chat_message("assistant"):
+            with st.spinner("Searching and generating…"):
+                answer, out_df, excel_bytes, curr_vec, updated_buffer = run_rag_turn(
+                    user_input,
+                    prev_query_vec=st.session_state.prev_query_vec,
+                    context_buffer=st.session_state.context_buffer
+                )
+
+            st.write(answer)
+            if not out_df.empty:
+                st.dataframe(out_df, use_container_width=True)
+
+            # Persist latest state
+            st.session_state.prev_query_vec = curr_vec
+            st.session_state.context_buffer = updated_buffer
+            st.session_state.last_excel_bytes = excel_bytes
+
+            # Save the assistant message WITH its own Excel for per-turn download
+            st.session_state.chat_msgs.append({
+                "role": "assistant",
+                "content": answer,
+                "matches_df": out_df,
+                "excel_bytes": excel_bytes
+            })
+
+    # Sidebar (placed after potential state updates so it works on first turn)
+    with st.sidebar:
+        st.markdown("### Search Session")
+        if st.button("🧹 Clear conversation"):
+            st.session_state.chat_msgs = []
+            st.session_state.last_excel_bytes = b""
+            st.session_state.prev_query_vec = None
+            st.session_state.context_buffer = []
             st.rerun()
 
-# ---------- MODE: SEARCH ----------
-if st.session_state.mode == "search":
-    st.subheader("Intelligent Search Mode")
-    query = st.text_area("Please explain what knowledge asset or topic you are interested in")
-    run = st.button("Search", type="primary")
-
-    if run:
-        if not query.strip():
-            st.error("Please enter a query.")
-            st.stop()
-
-        with st.spinner("Searching similar knowledge assets…"):
-            hits = search_topk(query, k=3)
-
-        if not hits:
-            st.warning("No matches found.")
-        else:
-            # Pull metadata rows either from SharePoint (not fetched here for simplicity) or local CSV
-            # Since we stored full metadata in Chroma, we can display directly;
-            # Also try to enrich from local CSV if present.
-            rows = []
-            for h in hits:
-                m = h["Metadata"]
-                rows.append({
-                    "RecordId": h["RecordId"],
-                    "Similarity": round(h["Score"], 4) if h["Score"] is not None else None,
-                    "Title": m.get("Title",""),
-                    "ContentOwner": m.get("ContentOwner",""),
-                    "Function": m.get("Function",""),
-                    "Site": m.get("Site","")
-                })
-
-            df = pd.DataFrame(rows)
-            st.write("### Top Matches")
-            st.dataframe(df, use_container_width=True)
-
-            # Build an Excel with the matched records, including Content Summary + Benefits
-            rec_ids = [r["RecordId"] for r in rows]
-            
-            if sharepoint_available():
-                sp_extra = sharepoint_lookup_record_ids(rec_ids)
-            
-                # rename overlapping columns so pandas doesn't complain
-                sp_extra = sp_extra.rename(columns={
-                    "Title": "Title_sp",
-                    "ContentOwner": "ContentOwner_sp",
-                    "Function": "Function_sp",
-                    "Site": "Site_sp"
-                })
-            
-                # bring only the fields we actually need from SP
-                sp_cols = ["RecordId", "ContentSummary", "Benefits", "Title_sp", "ContentOwner_sp", "Function_sp", "Site_sp"]
-                sp_extra = sp_extra[sp_cols] if not sp_extra.empty else sp_extra
-            
-                # left-merge preserves ranking order from df
-                out = df.merge(sp_extra, on="RecordId", how="left")
-            
-                # optional: if your df lacked some fields, backfill from SP
-                # out["Title"] = out["Title"].where(out["Title"].notna() & (out["Title"] != ""), out["Title_sp"])
-                # out["ContentOwner"] = out["ContentOwner"].fillna(out["ContentOwner_sp"])
-                # out["Function"] = out["Function"].fillna(out["Function_sp"])
-                # out["Site"] = out["Site"].fillna(out["Site_sp"])
-            
-            else:
-                local_extra = local_meta_lookup(rec_ids)
-                out = df.merge(local_extra, on="RecordId", how="left", suffixes=("",""))
-
-            # Right after merging into `out`
-            doc_contexts = out.to_dict(orient="records")
-            
-            with st.spinner("Generating synthesized answer..."):
-                answer = generate_answer(query, doc_contexts)
-            
-            st.write("### Synthesized Answer")
-            st.write(answer)
-
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                out.to_excel(writer, index=False, sheet_name="Matches")
+        if st.session_state.last_excel_bytes:
             st.download_button(
-                "Download matches as Excel",
-                data=buffer.getvalue(),
+                "⬇️ Download most recent Top-3 (Excel)",
+                data=st.session_state.last_excel_bytes,
                 file_name="ai4km_search_results.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
             )
 
-        # Confirmation loop
-        st.info("Do you want to do another search?")
-        coly, coln = st.columns(2)
-        with coly:
-            again = st.button("Yes — Search again")
-        with coln:
-            exit_ = st.button("No — Exit")
-
-        if again:
-            st.session_state.mode = "search"
-            st.rerun()
-        if exit_:
-            st.session_state.mode = None
-            st.rerun()
