@@ -1,5 +1,5 @@
 matches:
-  - trigger: "/km"
+  - trigger: "/askbob"
     replace: "{{out}}"
     vars:
       - name: out

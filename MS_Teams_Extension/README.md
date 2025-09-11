@@ -10,16 +10,16 @@
 </code>
 
 
-This guide explains how to configure your macOS environment so that typing `/km` in Microsoft Teams (personal account) automatically launches a Streamlit application in Safari.
+This guide explains how to configure your macOS environment so that typing `/askbob` in Microsoft Teams (personal account) automatically launches a Streamlit application in Safari.
 
 Sideloading MS Teams message extension (i.e. the slash command) is only possible to be done in work/school account where we need to build a message extension/bot with the Developer Portal for Teams and upload as a custom app which rquires an M365 account + admin settings. Naturally, this feature addition needs permission from Amgen MS Teams admin which typically takes a few weeks. Since the time is of the essence, the proof-of-concept (PoC) demo is done through personal laptop so org admin permission is not required. Since sideloading personal MS Teams extension is not possible, we are going to fake the experience of web application being invoked by MS Teams message extension. 
 
-We will use a tiny launcher script + a system-wide text expander that runs scripts when you type a trigger. Specifically, we will use **espanso** (an open-source text expander) to simulate a MS Teams command trigger. When we type "/km" in MS Teams, it will start the target Streamlit app in the background and open Safari browser.
+We will use a tiny launcher script + a system-wide text expander that runs scripts when you type a trigger. Specifically, we will use **espanso** (an open-source text expander) to simulate a MS Teams command trigger. When we type "/askbob" in MS Teams, it will start the target Streamlit app in the background and open Safari browser.
 
 Why not other routes?
 - Power Automate from a personal Teams account won't launch a process on your Mac wihout a local agent anyway, and custom app/bot upload needs an org tenant (i.e. Work/School MS Teams account) as discussed above.
 
-At the time of writing, development for KM-specific WebApp-based ChatBot for data ingestion and intelligent search is still being actively developed. This is the reason why the demo video below shows Streamlit application running a past AI project. The intention for the video below is to capture the seamless experience of MS Teams message extension to ultimately invoke Safari browser without having the need to remember which application/environment/URL to launch. At the end of the day, the intention is to deploy "/km" capability to encourage Amgen staffs for effortless idea/asset submission to Knowledge Marketplace.
+At the time of writing, development for KM-specific WebApp-based ChatBot for data ingestion and intelligent search is still being actively developed. This is the reason why the demo video below shows Streamlit application running a past AI project. The intention for the video below is to capture the seamless experience of MS Teams message extension to ultimately invoke Safari browser without having the need to remember which application/environment/URL to launch. At the end of the day, the intention is to deploy "/askbob" capability to encourage Amgen staffs for effortless idea/asset submission to Knowledge Marketplace.
 
 [YouTube Video LINK](https://youtu.be/4khPg8f5I4E)
 
@@ -88,7 +88,7 @@ chmod +x "~/Library/Application Support/espanso/scripts/km_launcher.sh"
 
 ## 3. Configure espanso Match
 
-Create a match definition so typing `/km` triggers the script by placing `km_launcher.yml` in the `match` directory within espanso's directory mentioned earlier.
+Create a match definition so typing `/askbob` triggers the script by placing `km_launcher.yml` in the `match` directory within espanso's directory mentioned earlier.
 
 Example: **`~/Library/Application Support/espanso/match/km_launcher.yml`**
 
@@ -106,7 +106,7 @@ Whenever you update the `km_launcher.sh` or `km_launcher.yml`, need to restart e
 ## 4. Test the Setup
 
 1.  Open Microsoft Teams (personal).
-2.  Type `/km`.
+2.  Type `/askbob`.
 3.  Safari will open with your Streamlit app.
 4.  Logs:
     -   Launcher: `/tmp/km_launcher.log`
@@ -128,7 +128,7 @@ espanso start --unmanaged
 
 ## Result
 
-Now you can demo a Teams-style "message extension" on a personal account: typing `/km` launches your local Streamlit web app in Safari.
+Now you can demo a Teams-style "message extension" on a personal account: typing `/askbob` launches your local Streamlit web app in Safari.
 
 ------------------------------------------------------------------------
 
