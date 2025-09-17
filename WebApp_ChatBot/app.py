@@ -665,19 +665,54 @@ header[data-testid="stHeader"], .block-container{ position:relative; z-index:1; 
   position: fixed; inset: 0; overflow: hidden;
   pointer-events: none; z-index:0;
 }
+/* yellow→white clouds */
+:root{
+  /* tweak these three to taste */
+  --cloud-core: #ffd400;   /* bright yellow center */
+  --cloud-mid:  #fff4a3;   /* soft pale yellow */
+  --cloud-edge: #ffffff;   /* white at edges */
+}
 .km-cloud{
   position: absolute; left: -40vw;
   width: 36vw; max-width: 520px; aspect-ratio: 16/9;
-  opacity:.93; filter: drop-shadow(0 12px 16px rgba(0,0,0,.08));
+  opacity:.95;
+  /* add a warm-ish glow */
+  filter: drop-shadow(0 12px 16px rgba(255,208,0,.12));
   animation: cloudDrift var(--dur,22s) linear infinite;
   animation-delay: var(--delay,0s);
+
+  /* each “puff” now blends from yellow center → white edge → transparent */
   background:
-    radial-gradient(35% 45% at 20% 65%, rgba(255,255,255,.98) 0 60%, transparent 61%),
-    radial-gradient(40% 50% at 40% 55%, rgba(255,255,255,.98) 0 60%, transparent 61%),
-    radial-gradient(45% 52% at 60% 58%, rgba(255,255,255,.98) 0 60%, transparent 61%),
-    radial-gradient(34% 44% at 75% 62%, rgba(255,255,255,.98) 0 60%, transparent 61%),
-    radial-gradient(30% 40% at 50% 40%, rgba(255,255,255,.98) 0 60%, transparent 61%),
-    radial-gradient(60% 55% at 50% 70%, rgba(255,255,255,.96) 0 62%, transparent 63%);
+    radial-gradient(35% 45% at 20% 65%,
+      var(--cloud-core) 0 2%,
+      var(--cloud-mid)  35%,
+      var(--cloud-edge) 60%,
+      transparent 61%),
+    radial-gradient(40% 50% at 40% 55%,
+      var(--cloud-core) 0 2%,
+      var(--cloud-mid)  34%,
+      var(--cloud-edge) 60%,
+      transparent 61%),
+    radial-gradient(45% 52% at 60% 58%,
+      var(--cloud-core) 0 2%,
+      var(--cloud-mid)  38%,
+      var(--cloud-edge) 60%,
+      transparent 61%),
+    radial-gradient(34% 44% at 75% 62%,
+      var(--cloud-core) 0 2%,
+      var(--cloud-mid)  32%,
+      var(--cloud-edge) 60%,
+      transparent 61%),
+    radial-gradient(30% 40% at 50% 40%,
+      var(--cloud-core) 0 2%,
+      var(--cloud-mid)  30%,
+      var(--cloud-edge) 60%,
+      transparent 61%),
+    radial-gradient(60% 55% at 50% 70%,
+      var(--cloud-core) 0 2%,
+      var(--cloud-mid)  40%,
+      var(--cloud-edge) 62%,
+      transparent 63%);
 }
 .km-cloud.c1{top:18%; --scale:.95; --dur:18s; --delay:-8s;}
 .km-cloud.c2{top:32%; --scale:.85; --dur:20s; --delay:-14s;}
@@ -753,6 +788,65 @@ header[data-testid="stHeader"], .block-container{ position:relative; z-index:1; 
   font-size: .95rem;
   color: #071a33;
 }
+
+
+/* ---------------------- Button Theme: Black background, White text ---------------------- */
+:root{
+  --km-btn-bg:#000000;
+  --km-btn-fg:#ffffff;
+  --km-btn-bg-hover:#111111;
+  --km-btn-border:#000000;
+}
+
+/* Core buttons */
+.stButton button,
+[data-testid="stFormSubmitButton"] button,
+[data-testid="stDownloadButton"] button,
+[data-testid="stChatInput"] button,
+[data-testid="stFileUploaderDropzone"] button{
+  background: var(--km-btn-bg) !important;
+  color: var(--km-btn-fg) !important;
+  border: 1px solid var(--km-btn-border) !important;
+  border-radius: 10px;            /* keep your rounded aesthetic */
+  box-shadow: 0 2px 6px rgba(0,0,0,.2);
+}
+
+/* Ensure any nested text nodes inside buttons also render white */
+.stButton button p,
+[data-testid="stFormSubmitButton"] button p,
+[data-testid="stDownloadButton"] button p{
+  color: var(--km-btn-fg) !important;
+}
+
+/* Chat input send icon to white */
+[data-testid="stChatInput"] button svg{
+  color: var(--km-btn-fg) !important;
+  fill: var(--km-btn-fg) !important;
+}
+
+/* Hover/active states */
+.stButton button:hover,
+[data-testid="stFormSubmitButton"] button:hover,
+[data-testid="stDownloadButton"] button:hover,
+[data-testid="stChatInput"] button:hover,
+[data-testid="stFileUploaderDropzone"] button:hover{
+  background: var(--km-btn-bg-hover) !important;
+}
+
+.stButton button:active,
+[data-testid="stFormSubmitButton"] button:active,
+[data-testid="stDownloadButton"] button:active,
+[data-testid="stChatInput"] button:active,
+[data-testid="stFileUploaderDropzone"] button:active{
+  transform: translateY(1px);
+}
+
+/* Optional: keep your earlier sizing tweaks */
+.stButton button,
+[data-testid="stFormSubmitButton"] button{
+  width:auto; padding:.55rem 1rem;
+}
+
 </style>
 
 <!-- clouds -->
@@ -850,7 +944,7 @@ with left:
             meta = st.session_state.ing_meta or {}
             parsed = st.session_state.ing_parsed_meta or {}
 
-            st.success("Draft extracted. Please review:")
+            st.success("**Draft extracted. Please review:**")
             st.markdown('<div class="km-pane">', unsafe_allow_html=True)
             st.write(f"**Title**: {meta.get('Title','')}")
             st.write("**Content Summary**"); st.write(meta.get("ContentSummary",""))
@@ -864,7 +958,7 @@ with left:
                     f"- **Function**: `{parsed.get('function','')}`"
                 )
 
-            st.info("Do you want to submit a new knowledge asset?")
+            st.info("**Do you want to submit a new knowledge asset?**")
             coly, coln = st.columns(2)
             yes = coly.button("Yes — Submit", key="yes_submit_card")
             no  = coln.button("No — Cancel", key="no_cancel_card")
