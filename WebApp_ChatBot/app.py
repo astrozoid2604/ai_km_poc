@@ -26,12 +26,12 @@ VECTOR_DB_PATH = os.getenv("VECTOR_DB_PATH", ".chroma")
 SHAREPOINT_ENABLED = os.getenv("SHAREPOINT_ENABLED", "false").lower() == "true"
 
 # SharePoint (certificate-based app-only)
-SP_TENANT      = os.getenv("SP_TENANT")             # yourtenant.onmicrosoft.com OR tenant GUID
-SP_SITE_URL    = os.getenv("SP_SITE_URL")           # https://<tenant>.sharepoint.com/sites/ai4km
-SP_LIST_NAME   = os.getenv("SP_LIST_NAME")          # e.g., AI4KM Knowledge Assets
-SP_CLIENT_ID   = os.getenv("SP_CLIENT_ID")          # App (client) ID
-SP_CERT_THUMB  = os.getenv("SP_CERT_THUMBPRINT")    # UPPERCASE hex, no colons
-SP_CERT_PEM    = os.getenv("SP_CERT_PEM_PATH")      # path to PEM **private key** (e.g., ./privkey.pem)
+SP_TENANT      = os.getenv("SP_TENANT")
+SP_SITE_URL    = os.getenv("SP_SITE_URL")
+SP_LIST_NAME   = os.getenv("SP_LIST_NAME")
+SP_CLIENT_ID   = os.getenv("SP_CLIENT_ID")
+SP_CERT_THUMB  = os.getenv("SP_CERT_THUMBPRINT")
+SP_CERT_PEM    = os.getenv("SP_CERT_PEM_PATH")
 
 # ========== OpenAI ==========
 from openai import OpenAI
@@ -75,6 +75,10 @@ def _coerce_json(s: str) -> dict:
     return json.loads(s)
 
 def llm_structured_extract(corpus: str, content_owner: str, function: str, site: str) -> Dict[str, str]:
+    """
+    Extract Title/ContentSummary/Benefits from corpus via LLM,
+    and attach parsed metadata (ContentOwner/Function/Site).
+    """
     sys = (
         "You are an expert knowledge engineer. From the provided corpus, extract:\n"
         "1) Title: a concise representative title\n"
@@ -310,12 +314,10 @@ def generate_answer_with_history(query: str,
     Answer with LLM using retrieved docs + recent chat history.
     Includes metadata fields (Site, ContentOwner, Function) in context.
     """
-    # If the metadata alone can answer, do it deterministically
     meta_answer = _maybe_answer_from_metadata(query, docs)
     if meta_answer:
         return meta_answer
 
-    # Build rich context for the LLM
     if not docs:
         base_context = "No relevant documents found to answer your question."
     else:
@@ -359,13 +361,10 @@ def run_rag_turn(user_query: str,
     One conversational RAG turn with topic-shift detection and context aggregation.
     Returns: (answer, out_df, excel_bytes, curr_query_vec, updated_context_buffer)
     """
-    # Embedding for topic-shift detection
     curr_vec = embed_text(user_query)
     if prev_query_vec is None or cosine_sim(prev_query_vec, curr_vec) < topic_shift_threshold:
-        # New topic → reset buffer
         context_buffer = []
 
-    # --- retrieval
     hits = search_topk(user_query, k=3)
     if not hits:
         empty_df = pd.DataFrame(columns=["RecordId","Similarity","Title","ContentOwner","Function","Site"])
@@ -384,7 +383,6 @@ def run_rag_turn(user_query: str,
         })
     df = pd.DataFrame(rows)
 
-    # --- enrichment
     rec_ids = [r["RecordId"] for r in rows]
     if sharepoint_available():
         sp_extra = sharepoint_lookup_record_ids(rec_ids)
@@ -401,20 +399,16 @@ def run_rag_turn(user_query: str,
         local_extra = local_meta_lookup(rec_ids)
         out = df.merge(local_extra, on="RecordId", how="left", suffixes=("",""))
 
-    # --- normalize docs for LLM context (adds Site/Owner/Function reliably)
     norm_docs_new = _normalize_doc_rows(out)
 
-    # --- update context buffer (dedupe by RecordId, cap size = 6)
     combined = norm_docs_new + (context_buffer or [])
     dedup = {}
     for d in combined:
         dedup[d.get("RecordId")] = d
     updated_buffer = list(dedup.values())[:6]
 
-    # --- generation (now sees metadata too)
     answer = generate_answer_with_history(user_query, updated_buffer, st.session_state.chat_msgs)
 
-    # --- Excel export for THIS TURN
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         out.to_excel(writer, index=False, sheet_name="Matches")
@@ -461,33 +455,60 @@ def read_txt(file) -> str:
     return file.read().decode("utf-8", errors="ignore")
 
 def read_pptx(file) -> str:
+    import tempfile
+    from pptx import Presentation
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pptx") as tmp:
         file.seek(0); tmp.write(file.read()); tmp.flush()
         path = tmp.name
+
     prs = Presentation(path)
     parts = []
     for idx, slide in enumerate(prs.slides, start=1):
         parts.append(f"## Slide {idx}")
+
+        # Slide body text
         for shape in slide.shapes:
-            if hasattr(shape, "has_text_frame") and shape.has_text_frame:
-                tf = shape.text_frame
-                for para in tf.paragraphs:
-                    text = "".join(run.text for run in para.runs).strip()
-                    if text:
-                        parts.append(text)
-            if hasattr(shape, "has_table") and shape.has_table:
+            if getattr(shape, "has_text_frame", False) and shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    t = "".join(run.text for run in para.runs).strip()
+                    if t:
+                        parts.append(t)
+            if getattr(shape, "has_table", False) and shape.has_table:
                 tbl = shape.table
                 for row in tbl.rows:
                     cells = [cell.text.strip() for cell in row.cells]
                     row_text = " | ".join([c for c in cells if c])
                     if row_text:
                         parts.append(row_text)
+
+        # Notes pane text (more thorough)
         try:
-            notes = slide.notes_slide.notes_text_frame.text
-            if notes and notes.strip():
-                parts.append("### Notes"); parts.append(notes.strip())
+            if getattr(slide, "has_notes_slide", False) and slide.has_notes_slide:
+                ns = slide.notes_slide
+                note_chunks = []
+                # 1) notes_text_frame if present
+                try:
+                    if ns and ns.notes_text_frame and ns.notes_text_frame.text:
+                        note_chunks.append(ns.notes_text_frame.text.strip())
+                except Exception:
+                    pass
+                # 2) any text frames within notes shapes
+                try:
+                    for shp in getattr(ns, "shapes", []):
+                        if getattr(shp, "has_text_frame", False) and shp.has_text_frame:
+                            for para in shp.text_frame.paragraphs:
+                                t = "".join(run.text for run in para.runs).strip()
+                                if t:
+                                    note_chunks.append(t)
+                except Exception:
+                    pass
+                if note_chunks:
+                    parts.append("### Notes")
+                    parts.extend(note_chunks)
         except Exception:
             pass
+
     return "\n".join([p for p in parts if p.strip()])
 
 def consolidate_files(files) -> str:
@@ -508,12 +529,50 @@ def consolidate_files(files) -> str:
             corpus_parts.append(read_txt(f))  # naive fallback
     return "\n\n".join([p for p in corpus_parts if p.strip()])
 
-# ========== Validators ==========
+# ========== Validators & Metadata Extraction ==========
 AMGEN_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@amgen\.com$")
 SITE_RE = re.compile(r"^[A-Za-z]{3}$")
 
 def to_title_case_words(s: str) -> str:
     return " ".join([w.capitalize() for w in re.split(r"\s+", (s or "").strip()) if w])
+
+META_PATTERNS = {
+    # look for 'email:' at start of a line OR mid-line; stop the capture at whitespace or common separators
+    "email": re.compile(r"(?im)\bemail\s*[:\-–]\s*([A-Za-z0-9._%+\-]+@amgen\.com)\b"),
+    # allow longer tokens, then keep only letters and trim to first 3 later
+    "site": re.compile(r"(?im)\bsite\s*[:\-–]\s*([A-Za-z]{2,10})\b"),
+    # capture until end-of-line; we trim punctuation and title-case later
+    "function": re.compile(r"(?im)\bfunction\s*[:\-–]\s*(.+)$"),
+}
+
+def extract_metadata_from_text(corpus: str) -> Dict[str, str]:
+    """
+    Extracts Email/Site/Function from corpus text.
+    - Accepts leading/trailing spaces, any case, and typical punctuation.
+    - Site normalized to 3-letter uppercase (validated).
+    - Function normalized to nice title case.
+    """
+    email = site = function = ""
+
+    m = META_PATTERNS["email"].search(corpus)
+    if m:
+        email_candidate = m.group(1).strip().lower()
+        email = email_candidate
+
+    m = META_PATTERNS["site"].search(corpus)
+    if m:
+        site_candidate = m.group(1).strip().upper()
+        # keep only letters and take first 3 if longer (defensive)
+        site_candidate = re.sub(r"[^A-Z]", "", site_candidate)[:3]
+        site = site_candidate
+
+    m = META_PATTERNS["function"].search(corpus)
+    if m:
+        # stop at end-of-line; trim common trailing punctuation
+        function_candidate = m.group(1).strip().rstrip(".,;: ")
+        function = to_title_case_words(function_candidate)
+
+    return {"email": email, "site": site, "function": function}
 
 # ========== UI ==========
 st.set_page_config(page_title="AI4KM - Local RAG", page_icon="💡", layout="wide")
@@ -523,9 +582,10 @@ def _reset_ingest_state():
     st.session_state.pop("ing_corpus", None)
     st.session_state.pop("ing_ready", None)
     st.session_state.pop("ing_last_record_id", None)
+    st.session_state.pop("ing_parsed_meta", None)
 
 # init keys once (ingestion)
-for k in ["ing_meta", "ing_corpus", "ing_ready", "ing_last_record_id"]:
+for k in ["ing_meta", "ing_corpus", "ing_ready", "ing_last_record_id", "ing_parsed_meta"]:
     if k not in st.session_state:
         st.session_state[k] = None
 
@@ -554,7 +614,6 @@ with col1:
 with col2:
     if st.button("Intelligent Search", use_container_width=True):
         st.session_state.mode = "search"
-        # reset chat when (re)entering search
         st.session_state.chat_msgs = []
         st.session_state.last_excel_bytes = b""
         st.session_state.prev_query_vec = None
@@ -562,30 +621,19 @@ with col2:
 
 st.divider()
 
-# ---------- MODE: INGEST ----------
+# ---------- MODE: DATA INGESTION ----------
 if st.session_state.mode == "ingest":
     st.subheader("Data Ingestion Mode")
 
     if not st.session_state.ing_ready:
         with st.form("ingestion_form"):
-            email = st.text_input("Amgen email address", placeholder="jdoe@amgen.com").strip().lower()
-            site = st.text_input("Site (3-letter code)", placeholder="e.g., ASM").strip().upper()
-            function = to_title_case_words(
-                st.text_input("Function/Department (nice case)", placeholder="Digital Technology & Innovation")
-            )
             files = st.file_uploader(
-                "Attach reference file(s)", accept_multiple_files=True,
+                "Attach reference file(s) (drag & drop)", accept_multiple_files=True,
                 type=["pdf","docx","xlsx","xls","txt","pptx"]
             )
             submitted = st.form_submit_button("Process")
 
         if submitted:
-            if not AMGEN_EMAIL_RE.match(email):
-                st.error("Please enter a valid Amgen email (…@amgen.com)."); st.stop()
-            if not SITE_RE.match(site):
-                st.error("Site must be a 3-letter code."); st.stop()
-            if not function:
-                st.error("Function/Department is required."); st.stop()
             if not files:
                 st.error("Please attach at least one file."); st.stop()
 
@@ -594,20 +642,68 @@ if st.session_state.mode == "ingest":
                 if not corpus.strip():
                     st.error("No readable text found in the uploaded files."); st.stop()
 
+            # --- DEBUG: show & export the consolidated text corpus ---
+            with st.expander("🪲 Debug: Show consolidated corpus (first 10,000 chars)"):
+                st.caption(f"Corpus length: {len(corpus):,} characters")
+                st.text_area("corpus", value=corpus[:10000], height=300)
+            
+            st.download_button(
+                "⬇️ Download full corpus (debug)",
+                data=corpus.encode("utf-8", errors="ignore"),
+                file_name="debug_corpus.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
+
+            # Parse metadata from text
+            parsed = extract_metadata_from_text(corpus)
+
+            # Validate parsed metadata
+            errors = []
+            if not parsed["email"] or not AMGEN_EMAIL_RE.match(parsed["email"]):
+                errors.append("Email (must be an @amgen.com address)")
+            if not parsed["site"] or not SITE_RE.match(parsed["site"]):
+                errors.append("Site (3-letter code, e.g., ASM)")
+            if not parsed["function"]:
+                errors.append("Function/Department")
+            if errors:
+                st.error(
+                    "I couldn't find valid values for:\n\n- " +
+                    "\n- ".join(errors) +
+                    "\n\nPlease make sure your file contains lines like:\n"
+                    "`Email: jdoe@amgen.com`, `Site: ASM`, `Function: Digital Technology & Innovation`"
+                )
+                st.stop()
+
             with st.spinner("Generating Title, Content Summary and Benefits via LLM…"):
-                meta = llm_structured_extract(corpus, email, function, site)
+                meta = llm_structured_extract(
+                    corpus,
+                    content_owner=parsed["email"],
+                    function=parsed["function"],
+                    site=parsed["site"]
+                )
 
             st.session_state.ing_corpus = corpus
             st.session_state.ing_meta = meta
+            st.session_state.ing_parsed_meta = parsed
             st.session_state.ing_ready = True
             st.rerun()
 
     else:
         meta = st.session_state.ing_meta or {}
+        parsed = st.session_state.ing_parsed_meta or {}
+
         st.success("Draft extracted. Please review:")
         st.write(f"**Title**: {meta.get('Title','')}")
         st.write("**Content Summary**"); st.write(meta.get("ContentSummary",""))
         st.write("**Benefits**"); st.write(meta.get("Benefits",""))
+
+        with st.expander("Parsed Metadata (from your files)"):
+            st.markdown(
+                f"- **Email**: `{parsed.get('email','')}`\n"
+                f"- **Site**: `{parsed.get('site','')}`\n"
+                f"- **Function**: `{parsed.get('function','')}`"
+            )
 
         st.info("Do you want to submit a new knowledge asset?")
         coly, coln = st.columns(2)
@@ -651,7 +747,7 @@ if st.session_state.mode == "ingest":
         if no:
             _reset_ingest_state(); st.session_state.mode = None; st.rerun()
 
-# ---------- MODE: SEARCH (Conversational RAG) ----------
+# ---------- MODE: INTELLIGENT SEARCH (Conversational RAG) ----------
 if st.session_state.mode == "search":
     st.subheader("Intelligent Search (Conversational RAG)")
 
@@ -659,7 +755,6 @@ if st.session_state.mode == "search":
     for m in st.session_state.chat_msgs:
         with st.chat_message(m["role"]):
             st.write(m["content"])
-            # Per-turn results & per-turn download button
             if m.get("matches_df") is not None:
                 st.dataframe(m["matches_df"], use_container_width=True)
             if m.get("excel_bytes"):
@@ -675,12 +770,10 @@ if st.session_state.mode == "search":
     # Chat input
     user_input = st.chat_input("Ask about a knowledge asset or topic")
     if user_input:
-        # User turn
         st.session_state.chat_msgs.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
             st.write(user_input)
 
-        # Assistant turn
         with st.chat_message("assistant"):
             with st.spinner("Searching and generating…"):
                 answer, out_df, excel_bytes, curr_vec, updated_buffer = run_rag_turn(
@@ -693,12 +786,10 @@ if st.session_state.mode == "search":
             if not out_df.empty:
                 st.dataframe(out_df, use_container_width=True)
 
-            # Persist latest state
             st.session_state.prev_query_vec = curr_vec
             st.session_state.context_buffer = updated_buffer
             st.session_state.last_excel_bytes = excel_bytes
 
-            # Save the assistant message WITH its own Excel for per-turn download
             st.session_state.chat_msgs.append({
                 "role": "assistant",
                 "content": answer,
@@ -706,7 +797,7 @@ if st.session_state.mode == "search":
                 "excel_bytes": excel_bytes
             })
 
-    # Sidebar (placed after potential state updates so it works on first turn)
+    # Sidebar
     with st.sidebar:
         st.markdown("### Search Session")
         if st.button("🧹 Clear conversation"):
