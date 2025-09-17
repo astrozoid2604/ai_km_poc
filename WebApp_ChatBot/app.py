@@ -16,7 +16,6 @@ load_dotenv()
 # (optional) set your working dir if you need it
 os.chdir('/Users/jameslim/Desktop/GITHUB/ai_km_poc/WebApp_ChatBot')
 
-
 # ========== Config ==========
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 if not OPENAI_API_KEY:
@@ -357,9 +356,7 @@ def suggest_followups(user_query: str, docs: List[Dict[str, Any]], answer: str, 
     """
     Proposes grounded, helpful next questions based on the current query, the retrieved docs' metadata,
     and the assistant's answer. Returns <= max_suggestions items.
-    Falls back to deterministic ideas if LLM parsing fails.
     """
-    # Build a compact doc context (titles + key metadata only)
     if docs:
         meta_lines = []
         for i, d in enumerate(docs[:5], start=1):
@@ -393,37 +390,13 @@ def suggest_followups(user_query: str, docs: List[Dict[str, Any]], answer: str, 
         )
         j = _coerce_json(r.choices[0].message.content)
         out = [s.strip() for s in (j.get("suggestions") or []) if isinstance(s, str) and s.strip()]
-        # Keep it tidy and unique
         uniq = []
         for s in out:
             if s not in uniq:
                 uniq.append(s)
         return uniq[:max_suggestions] if uniq else []
     except Exception:
-        pass
-
-    # --- Deterministic fallbacks (grounded in metadata we often have)
-    fallbacks = []
-    # probe for metadata variety
-    sites = sorted({(d.get("Site") or "").strip() for d in docs if (d.get("Site") or "").strip()})
-    owners = sorted({(d.get("ContentOwner") or "").strip() for d in docs if (d.get("ContentOwner") or "").strip()})
-    funcs = sorted({(d.get("Function") or "").strip() for d in docs if (d.get("Function") or "").strip()})
-
-    if sites:
-        fallbacks.append("Which site(s) implemented similar improvements?")
-    if owners:
-        fallbacks.append("Who is the content owner for the top match?")
-    if funcs:
-        fallbacks.append("Which function is responsible for this asset?")
-    fallbacks.append("Can you summarize the key benefits mentioned?")
-    fallbacks.append("Show me more matches related to this topic.")
-
-    uniq_fb = []
-    for s in fallbacks:
-        if s not in uniq_fb:
-            uniq_fb.append(s)
-    return uniq_fb[:max_suggestions]
-
+        return []
 
 def run_rag_turn(user_query: str,
                  prev_query_vec: List[float] | None,
@@ -432,7 +405,7 @@ def run_rag_turn(user_query: str,
                  ) -> tuple[str, pd.DataFrame, bytes, List[float], List[Dict[str, Any]], list[str]]:
     """
     One conversational RAG turn with topic-shift detection and context aggregation.
-    Returns: (answer, out_df, excel_bytes, curr_query_vec, updated_context_buffer)
+    Returns: (answer, out_df, excel_bytes, curr_query_vec, updated_context_buffer, suggestions)
     """
     curr_vec = embed_text(user_query)
     if prev_query_vec is None or cosine_sim(prev_query_vec, curr_vec) < topic_shift_threshold:
@@ -442,7 +415,6 @@ def run_rag_turn(user_query: str,
     if not hits:
         empty_df = pd.DataFrame(columns=["RecordId","Similarity","Title","ContentOwner","Function","Site"])
         return ("I couldn't find relevant knowledge assets for that query.", empty_df, b"", curr_vec, context_buffer, [])
-    
 
     rows = []
     for h in hits:
@@ -503,24 +475,16 @@ def _append_assistant_turn(answer: str, out_df: pd.DataFrame, excel_bytes: bytes
 
 def _do_query_and_append(query: str):
     """Run one RAG turn for `query`, update state, do not render. Rendering happens in the history loop."""
-    # user message
     st.session_state.chat_msgs.append({"role": "user", "content": query})
-
-    # assistant computation
     answer, out_df, excel_bytes, curr_vec, updated_buffer, suggestions = run_rag_turn(
         query,
         prev_query_vec=st.session_state.prev_query_vec,
         context_buffer=st.session_state.context_buffer
     )
-
-    # persist session state for next turns
     st.session_state.prev_query_vec = curr_vec
     st.session_state.context_buffer = updated_buffer
     st.session_state.last_excel_bytes = excel_bytes
-
-    # append assistant message
     _append_assistant_turn(answer, out_df, excel_bytes, suggestions)
-
 
 # ========== File parsers ==========
 from PyPDF2 import PdfReader
@@ -561,19 +525,13 @@ def read_txt(file) -> str:
     return file.read().decode("utf-8", errors="ignore")
 
 def read_pptx(file) -> str:
-    import tempfile
-    from pptx import Presentation
-
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pptx") as tmp:
         file.seek(0); tmp.write(file.read()); tmp.flush()
         path = tmp.name
-
     prs = Presentation(path)
     parts = []
     for idx, slide in enumerate(prs.slides, start=1):
         parts.append(f"## Slide {idx}")
-
-        # Slide body text
         for shape in slide.shapes:
             if getattr(shape, "has_text_frame", False) and shape.has_text_frame:
                 for para in shape.text_frame.paragraphs:
@@ -587,19 +545,15 @@ def read_pptx(file) -> str:
                     row_text = " | ".join([c for c in cells if c])
                     if row_text:
                         parts.append(row_text)
-
-        # Notes pane text (more thorough)
         try:
             if getattr(slide, "has_notes_slide", False) and slide.has_notes_slide:
                 ns = slide.notes_slide
                 note_chunks = []
-                # 1) notes_text_frame if present
                 try:
                     if ns and ns.notes_text_frame and ns.notes_text_frame.text:
                         note_chunks.append(ns.notes_text_frame.text.strip())
                 except Exception:
                     pass
-                # 2) any text frames within notes shapes
                 try:
                     for shp in getattr(ns, "shapes", []):
                         if getattr(shp, "has_text_frame", False) and shp.has_text_frame:
@@ -614,7 +568,6 @@ def read_pptx(file) -> str:
                     parts.extend(note_chunks)
         except Exception:
             pass
-
     return "\n".join([p for p in parts if p.strip()])
 
 def consolidate_files(files) -> str:
@@ -643,41 +596,25 @@ def to_title_case_words(s: str) -> str:
     return " ".join([w.capitalize() for w in re.split(r"\s+", (s or "").strip()) if w])
 
 META_PATTERNS = {
-    # look for 'email:' at start of a line OR mid-line; stop the capture at whitespace or common separators
     "email": re.compile(r"(?im)\bemail\s*[:\-–]\s*([A-Za-z0-9._%+\-]+@amgen\.com)\b"),
-    # allow longer tokens, then keep only letters and trim to first 3 later
     "site": re.compile(r"(?im)\bsite\s*[:\-–]\s*([A-Za-z]{2,10})\b"),
-    # capture until end-of-line; we trim punctuation and title-case later
     "function": re.compile(r"(?im)\bfunction\s*[:\-–]\s*(.+)$"),
 }
 
 def extract_metadata_from_text(corpus: str) -> Dict[str, str]:
-    """
-    Extracts Email/Site/Function from corpus text.
-    - Accepts leading/trailing spaces, any case, and typical punctuation.
-    - Site normalized to 3-letter uppercase (validated).
-    - Function normalized to nice title case.
-    """
     email = site = function = ""
-
     m = META_PATTERNS["email"].search(corpus)
     if m:
-        email_candidate = m.group(1).strip().lower()
-        email = email_candidate
-
+        email = m.group(1).strip().lower()
     m = META_PATTERNS["site"].search(corpus)
     if m:
         site_candidate = m.group(1).strip().upper()
-        # keep only letters and take first 3 if longer (defensive)
         site_candidate = re.sub(r"[^A-Z]", "", site_candidate)[:3]
         site = site_candidate
-
     m = META_PATTERNS["function"].search(corpus)
     if m:
-        # stop at end-of-line; trim common trailing punctuation
         function_candidate = m.group(1).strip().rstrip(".,;: ")
         function = to_title_case_words(function_candidate)
-
     return {"email": email, "site": site, "function": function}
 
 # ========== UI ==========
@@ -752,64 +689,61 @@ header[data-testid="stHeader"], .block-container{ position:relative; z-index:1; 
   to  {transform:translateX(200vw) translateY(-50%) scale(var(--scale,1));}
 }
 
-/* ===== Card backgrounds attached to the column (robust wrapper) ===== */
-/* mark columns that should become cards */
-.km-card-anchor{ display:none; }
-
-/* the column that contains the anchor becomes the 'card host' */
-[data-testid="column"]:has(.km-card-anchor){
-  position: relative; z-index:2;      /* above clouds */
-  padding: 18px 12px 22px;            /* breathing room for the card */
-}
-
-/* draw the gradient card behind all the column content */
-[data-testid="column"]:has(.km-card-anchor)::before{
-  content:"";
-  position:absolute;
-  inset: 6px 8px 10px;                 /* inner margin around the card */
-  border-radius:22px;
+/* ===== Card wrappers (reliable, visible colors) ===== */
+.km-card{
+  border-radius: 22px;
+  padding: 18px 16px 22px;
+  margin: 6px 8px 10px;
   box-shadow: 0 14px 30px rgba(0,0,0,.18);
-  z-index:0;                           /* behind column children */
-  background: #fff;                    /* default, overridden below */
+  position: relative;
+  z-index: 2; /* above clouds */
 }
 
-/* color variants via data attribute on the anchor */
-[data-testid="column"]:has(.km-card-anchor[data-card="ingest"])::before{
-  background: linear-gradient(135deg,#ffb865,#ff7a00);
-}
-[data-testid="column"]:has(.km-card-anchor[data-card="search"])::before{
-  background: linear-gradient(135deg,#81e6a1,#16c172);
-}
+/* Bright SOLID backgrounds (no gradients to avoid blending with sky) */
+.km-ingest { background: #ff7a00; }   /* bright orange */
+.km-search { background: #16c172; }   /* bright green  */
 
-/* lift all actual content above the ::before card */
-[data-testid="column"]:has(.km-card-anchor) > *{ position:relative; z-index:1; }
-
-/* inner white panels */
+/* Inner white panels so inputs are readable; semi-opaque so color frame shows */
 .km-pane{
-  background: rgba(255,255,255,.9);
+  background: rgba(255,255,255,.96);
   border-radius:16px;
   padding:12px 14px;
   box-shadow: inset 0 1px 0 rgba(255,255,255,.6);
-  margin:10px 0;
+  margin:12px 0;
 }
 
-/* keep widgets from stretching edge-to-edge */
-[data-testid="column"]:has(.km-card-anchor) [data-testid="stTextInputRoot"],
-[data-testid="column"]:has(.km-card-anchor) [data-testid="stFileUploaderDropzone"],
-[data-testid="column"]:has(.km-card-anchor) [data-testid="stDataFrameContainer"],
-[data-testid="column"]:has(.km-card-anchor) [data-testid="stDownloadButton"]{
-  max-width:880px;
-}
-[data-testid="column"]:has(.km-card-anchor) .stButton button,
-[data-testid="column"]:has(.km-card-anchor) [data-testid="stFormSubmitButton"] button{
-  width:auto; padding:.55rem 1rem;
-}
-
-/* chat bubbles */
+/* Chat bubbles */
 .km-chat{ max-height:320px; overflow:auto; padding-right:6px; }
 .km-msg{ margin:8px 0; padding:10px 12px; border-radius:12px; background:rgba(255,255,255,.92); }
 .km-msg.user{ border-left:4px solid #0D6EFD; }
 .km-msg.assistant{ border-left:4px solid #6633ff; }
+
+/* Keep widgets from stretching edge-to-edge */
+[data-testid="stTextInputRoot"],
+[data-testid="stFileUploaderDropzone"],
+[data-testid="stDataFrameContainer"],
+[data-testid="stDownloadButton"]{ max-width:880px; }
+.stButton button, [data-testid="stFormSubmitButton"] button{ width:auto; padding:.55rem 1rem; }
+
+/* ---- Bold, bigger text helpers ---- */
+.km-lead{
+  font-weight: 700;
+  font-size: 1.05rem;   /* slightly larger than normal */
+  color: #071a33;
+  margin: 4px 0 12px;
+}
+.km-label{
+  font-weight: 700;
+  font-size: 1rem;
+  color: #071a33;
+  margin: 6px 0 6px;
+  display: block;
+}
+.km-note{
+  font-weight: 600;
+  font-size: .95rem;
+  color: #071a33;
+}
 </style>
 
 <!-- clouds -->
@@ -827,33 +761,32 @@ left, right = st.columns([1, 1], gap="large")
 
 # ---------------- LEFT: DATA INGESTION ----------------
 with left:
-    # mark this column as a card host (orange)
-    st.markdown('<i class="km-card-anchor" data-card="ingest"></i>', unsafe_allow_html=True)
+    st.markdown('<div class="km-card km-ingest">', unsafe_allow_html=True)
 
     st.subheader("Data Ingestion")
-    st.caption("Submit new knowledge assets. I’ll extract Title, Summary, Benefits and index them.")
+    #st.caption("Submit new knowledge assets. I’ll extract Title, Summary, Benefits and index them.")
+    st.markdown('<div class="km-lead">Submit new knowledge assets. I’ll extract <b>Title</b>, <b>Summary</b>, <b>Benefits</b> and index them.</div>', unsafe_allow_html=True)
 
-    # --- NEW: success panel without stopping the whole app ---
+    # Success panel (after SharePoint ok)
     show_success_panel = (st.session_state.get("ing_flow_done") == "sp_ok")
     if show_success_panel:
         rid = st.session_state.get("ing_last_record_id", "")
         st.success(f"✅ Submitted to SharePoint successfully. RecordId: {rid}")
         if st.button("➕ Ingest another?"):
-            # clear post-submit flag and reset to fresh ingestion form
             st.session_state.ing_flow_done = None
             st.session_state.ing_last_record_id = None
             st.rerun()
-    # ----------------------------------------------------------
 
-    # Only render the draft/review + form when not in success state
     if not show_success_panel:
         if not st.session_state.ing_ready:
             with st.form("ingestion_form_card", clear_on_submit=False):
                 st.markdown('<div class="km-pane">', unsafe_allow_html=True)
+                st.markdown('<label class="km-label">Attach reference file(s) (drag & drop)</label>', unsafe_allow_html=True)                
                 files = st.file_uploader(
-                    "Attach reference file(s) (drag & drop)",
+                    "",
                     accept_multiple_files=True,
-                    type=["pdf","docx","xlsx","xls","txt","pptx"]
+                    type=["pdf","docx","xlsx","xls","txt","pptx"],
+                    label_visibility="collapsed"
                 )
                 st.markdown('</div>', unsafe_allow_html=True)
                 submit_ing = st.form_submit_button("Process")
@@ -973,13 +906,15 @@ with left:
                 st.session_state.ing_parsed_meta = None
                 st.rerun()
 
+    st.markdown('</div>', unsafe_allow_html=True)  # close orange card
+
 # ---------------- RIGHT: INTELLIGENT SEARCH ----------------
 with right:
-    # mark this column as a card host (green)
-    st.markdown('<i class="km-card-anchor" data-card="search"></i>', unsafe_allow_html=True)
+    st.markdown('<div class="km-card km-search">', unsafe_allow_html=True)
 
     st.subheader("Intelligent Search")
-    st.caption("Ask about knowledge assets. I’ll retrieve, ground answers, and suggest follow-ups.")
+    #st.caption("Ask about knowledge assets. I’ll retrieve, ground answers, and suggest follow-ups.")
+    st.markdown('<div class="km-lead">Ask about knowledge assets. I’ll <b>retrieve</b>, <b>ground answers</b>, and <b>suggest follow-ups</b>.</div>', unsafe_allow_html=True)
 
     if st.session_state.pending_auto_query:
         auto_q = st.session_state.pending_auto_query
@@ -989,9 +924,11 @@ with right:
 
     with st.form("search_form_card", clear_on_submit=True):
         st.markdown('<div class="km-pane">', unsafe_allow_html=True)
-        user_input = st.text_input("Type your query",
+        st.markdown('<label class="km-label">Type your query</label>', unsafe_allow_html=True)
+        user_input = st.text_input("",
                                    key="search_query_card",
-                                   placeholder="e.g., What do you know about RMA?")
+                                   placeholder="e.g., What do you know about RMA?",
+                                   label_visibility="collapsed")
         st.markdown('</div>', unsafe_allow_html=True)
         submit_search = st.form_submit_button("Ask")
 
@@ -1001,7 +938,8 @@ with right:
 
     st.markdown('<div class="km-pane km-chat">', unsafe_allow_html=True)
     if not st.session_state.chat_msgs:
-        st.caption("Your conversation will appear here.")
+        st.markdown('<div class="km-note">Your conversation will appear here.</div>', unsafe_allow_html=True)
+        #st.caption("Your conversation will appear here.")
     else:
         for idx, m in enumerate(st.session_state.chat_msgs):
             role = m["role"]
@@ -1049,4 +987,6 @@ with right:
                 use_container_width=True,
                 key="dl_latest_card"
             )
+
+    st.markdown('</div>', unsafe_allow_html=True)  # close green card
 
