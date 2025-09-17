@@ -618,7 +618,7 @@ def extract_metadata_from_text(corpus: str) -> Dict[str, str]:
     return {"email": email, "site": site, "function": function}
 
 # ========== UI ==========
-st.set_page_config(page_title="AI4KM - Local RAG", page_icon="💡", layout="wide")
+st.set_page_config(page_title="AI4KM RAG Pipeline", page_icon="💡", layout="wide")
 
 # ---------- Session keys ----------
 def _reset_ingest_state():
@@ -713,7 +713,16 @@ header[data-testid="stHeader"], .block-container{ position:relative; z-index:1; 
 }
 
 /* Chat bubbles */
-.km-chat{ max-height:320px; overflow:auto; padding-right:6px; }
+.km-chat{
+  /* Make the chat pane tall and scrollable so the page itself doesn't grow */
+  height: calc(100vh - 360px);   /* adjust if your header/subheaders change */
+  min-height: 300px;
+  max-height: 40vh;              /* safety cap on very tall screens */
+  overflow-y: auto;
+  padding-right: 6px;
+  scroll-behavior: smooth;
+  overscroll-behavior: contain;  /* avoid "rubber band" scroll affecting page */
+}
 .km-msg{ margin:8px 0; padding:10px 12px; border-radius:12px; background:rgba(255,255,255,.92); }
 .km-msg.user{ border-left:4px solid #0D6EFD; }
 .km-msg.assistant{ border-left:4px solid #6633ff; }
@@ -756,7 +765,7 @@ header[data-testid="stHeader"], .block-container{ position:relative; z-index:1; 
 </div>
 """, unsafe_allow_html=True)
 
-st.title("AI4KM (AI for Knowledge Marketplace) - Local PoC")
+st.title("AI4KM (AI for Knowledge Marketplace)")
 left, right = st.columns([1, 1], gap="large")
 
 # ---------------- LEFT: DATA INGESTION ----------------
@@ -913,44 +922,54 @@ with right:
     st.markdown('<div class="km-card km-search">', unsafe_allow_html=True)
 
     st.subheader("Intelligent Search")
-    #st.caption("Ask about knowledge assets. I’ll retrieve, ground answers, and suggest follow-ups.")
-    st.markdown('<div class="km-lead">Ask about knowledge assets. I’ll <b>retrieve</b>, <b>ground answers</b>, and <b>suggest follow-ups</b>.</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="km-lead">Ask about knowledge assets. I’ll <b>retrieve</b>, '
+        '<b>ground answers</b>, and <b>suggest follow-ups</b>.</div>',
+        unsafe_allow_html=True
+    )
 
+    # 1) Handle any auto-question first (from suggestion chips)
     if st.session_state.pending_auto_query:
         auto_q = st.session_state.pending_auto_query
         st.session_state.pending_auto_query = ""
         with st.spinner("Searching and generating…"):
             _do_query_and_append(auto_q)
+            st.rerun()  # ensure render in the same run
 
-    with st.form("search_form_card", clear_on_submit=True):
-        st.markdown('<div class="km-pane">', unsafe_allow_html=True)
-        st.markdown('<label class="km-label">Type your query</label>', unsafe_allow_html=True)
-        user_input = st.text_input("",
-                                   key="search_query_card",
-                                   placeholder="e.g., What do you know about RMA?",
-                                   label_visibility="collapsed")
-        st.markdown('</div>', unsafe_allow_html=True)
-        submit_search = st.form_submit_button("Ask")
-
-    if submit_search and user_input:
+    # 2) Bottom-pinned composer FIRST (so new turns are processed before history renders)
+    chat_prompt = st.chat_input("Type your query…")
+    if chat_prompt:
         with st.spinner("Searching and generating…"):
-            _do_query_and_append(user_input)
+            _do_query_and_append(chat_prompt)
+            st.rerun()  # render freshly-added turn immediately
 
-    st.markdown('<div class="km-pane km-chat">', unsafe_allow_html=True)
+    # 3) Scrollable chat box: render ONLY message bubbles inside it
+    bubble_html_parts = []
     if not st.session_state.chat_msgs:
-        st.markdown('<div class="km-note">Your conversation will appear here.</div>', unsafe_allow_html=True)
-        #st.caption("Your conversation will appear here.")
+        bubble_html_parts.append('<div class="km-note">Your conversation will appear here.</div>')
     else:
-        for idx, m in enumerate(st.session_state.chat_msgs):
-            role = m["role"]
+        for m in st.session_state.chat_msgs:
+            role = m.get("role", "assistant")
             css_role = "user" if role == "user" else "assistant"
-            st.markdown(
-                f'<div class="km-msg {css_role}"><strong>{role.title()}:</strong><br>{m["content"]}</div>',
-                unsafe_allow_html=True
+            txt = m.get("content", "")
+            bubble_html_parts.append(
+                f'<div class="km-msg {css_role}"><strong>{role.title()}:</strong><br>{txt}</div>'
             )
-            if role == "assistant":
-                if m.get("matches_df") is not None and isinstance(m["matches_df"], pd.DataFrame) and not m["matches_df"].empty:
+
+    st.markdown(
+        f'<div class="km-pane km-chat">{"".join(bubble_html_parts)}</div>',
+        unsafe_allow_html=True
+    )
+
+    # 4) Render attachments (tables, downloads, suggestions) BELOW the chat box
+    if st.session_state.chat_msgs:
+        for idx, m in enumerate(st.session_state.chat_msgs):
+            if m.get("role") == "assistant":
+                # Matched results table
+                if isinstance(m.get("matches_df"), pd.DataFrame) and not m["matches_df"].empty:
                     st.dataframe(m["matches_df"], use_container_width=True)
+
+                # Per-turn Excel download
                 if m.get("excel_bytes"):
                     st.download_button(
                         "⬇️ Download this turn's Top-3 (Excel)",
@@ -959,6 +978,8 @@ with right:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key=f"dl_turn_{idx}"
                     )
+
+                # Follow-up suggestions
                 if m.get("suggestions"):
                     st.write("**You could also ask:**")
                     sug_cols = st.columns(len(m["suggestions"]))
@@ -966,8 +987,8 @@ with right:
                         if sug_cols[i].button(s, key=f"sugg_turn_{idx}_{i}"):
                             st.session_state.pending_auto_query = s
                             st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
 
+    # 5) Controls row
     c1, c2 = st.columns(2)
     with c1:
         if st.button("🧹 Clear conversation", use_container_width=True):
@@ -989,4 +1010,3 @@ with right:
             )
 
     st.markdown('</div>', unsafe_allow_html=True)  # close green card
-
