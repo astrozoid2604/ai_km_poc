@@ -683,6 +683,7 @@ def extract_metadata_from_text(corpus: str) -> Dict[str, str]:
 # ========== UI ==========
 st.set_page_config(page_title="AI4KM - Local RAG", page_icon="💡", layout="wide")
 
+# ---------- Session keys ----------
 def _reset_ingest_state():
     st.session_state.pop("ing_meta", None)
     st.session_state.pop("ing_corpus", None)
@@ -691,7 +692,7 @@ def _reset_ingest_state():
     st.session_state.pop("ing_parsed_meta", None)
 
 # init keys once (ingestion)
-for k in ["ing_meta", "ing_corpus", "ing_ready", "ing_last_record_id", "ing_parsed_meta"]:
+for k in ["ing_meta", "ing_corpus", "ing_ready", "ing_last_record_id", "ing_parsed_meta", "ing_flow_done"]:
     if k not in st.session_state:
         st.session_state[k] = None
 
@@ -710,175 +711,306 @@ if st.session_state.prev_query_vec is None:
 if st.session_state.context_buffer is None:
     st.session_state.context_buffer = []
 
-if "mode" not in st.session_state:
-    st.session_state.mode = None
+# ============= Global Styles and Animated Background =============
+st.markdown("""
+<style>
+/* ----- App background ----- */
+html, body, [data-testid="stAppViewContainer"] { height: 100%; margin: 0; }
+[data-testid="stAppViewContainer"]{
+  position: relative;
+  background: radial-gradient(circle at center,
+    #e6f2ff 0%, #cfe7ff 26%, #84bdfd 48%, #3c87d3 70%, #183160 90%, #09152d 100%);
+}
+header[data-testid="stHeader"], .block-container{ position:relative; z-index:1; }
+
+/* ----- Clouds (base layer) ----- */
+.km-sky{
+  position: fixed; inset: 0; overflow: hidden;
+  pointer-events: none; z-index:0;
+}
+.km-cloud{
+  position: absolute; left: -40vw;
+  width: 36vw; max-width: 520px; aspect-ratio: 16/9;
+  opacity:.93; filter: drop-shadow(0 12px 16px rgba(0,0,0,.08));
+  animation: cloudDrift var(--dur,22s) linear infinite;
+  animation-delay: var(--delay,0s);
+  background:
+    radial-gradient(35% 45% at 20% 65%, rgba(255,255,255,.98) 0 60%, transparent 61%),
+    radial-gradient(40% 50% at 40% 55%, rgba(255,255,255,.98) 0 60%, transparent 61%),
+    radial-gradient(45% 52% at 60% 58%, rgba(255,255,255,.98) 0 60%, transparent 61%),
+    radial-gradient(34% 44% at 75% 62%, rgba(255,255,255,.98) 0 60%, transparent 61%),
+    radial-gradient(30% 40% at 50% 40%, rgba(255,255,255,.98) 0 60%, transparent 61%),
+    radial-gradient(60% 55% at 50% 70%, rgba(255,255,255,.96) 0 62%, transparent 63%);
+}
+.km-cloud.c1{top:18%; --scale:.95; --dur:18s; --delay:-8s;}
+.km-cloud.c2{top:32%; --scale:.85; --dur:20s; --delay:-14s;}
+.km-cloud.c3{top:46%; --scale:1.05; --dur:19s; --delay:-4s;}
+.km-cloud.c4{top:60%; --scale:.92; --dur:21s; --delay:-20s;}
+.km-cloud.c5{top:72%; --scale:1.15; --dur:22s; --delay:-10s;}
+@keyframes cloudDrift{
+  from{transform:translateX(0) translateY(-50%) scale(var(--scale,1));}
+  to  {transform:translateX(200vw) translateY(-50%) scale(var(--scale,1));}
+}
+
+/* ===== Card backgrounds attached to the column (robust wrapper) ===== */
+/* mark columns that should become cards */
+.km-card-anchor{ display:none; }
+
+/* the column that contains the anchor becomes the 'card host' */
+[data-testid="column"]:has(.km-card-anchor){
+  position: relative; z-index:2;      /* above clouds */
+  padding: 18px 12px 22px;            /* breathing room for the card */
+}
+
+/* draw the gradient card behind all the column content */
+[data-testid="column"]:has(.km-card-anchor)::before{
+  content:"";
+  position:absolute;
+  inset: 6px 8px 10px;                 /* inner margin around the card */
+  border-radius:22px;
+  box-shadow: 0 14px 30px rgba(0,0,0,.18);
+  z-index:0;                           /* behind column children */
+  background: #fff;                    /* default, overridden below */
+}
+
+/* color variants via data attribute on the anchor */
+[data-testid="column"]:has(.km-card-anchor[data-card="ingest"])::before{
+  background: linear-gradient(135deg,#ffb865,#ff7a00);
+}
+[data-testid="column"]:has(.km-card-anchor[data-card="search"])::before{
+  background: linear-gradient(135deg,#81e6a1,#16c172);
+}
+
+/* lift all actual content above the ::before card */
+[data-testid="column"]:has(.km-card-anchor) > *{ position:relative; z-index:1; }
+
+/* inner white panels */
+.km-pane{
+  background: rgba(255,255,255,.9);
+  border-radius:16px;
+  padding:12px 14px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.6);
+  margin:10px 0;
+}
+
+/* keep widgets from stretching edge-to-edge */
+[data-testid="column"]:has(.km-card-anchor) [data-testid="stTextInputRoot"],
+[data-testid="column"]:has(.km-card-anchor) [data-testid="stFileUploaderDropzone"],
+[data-testid="column"]:has(.km-card-anchor) [data-testid="stDataFrameContainer"],
+[data-testid="column"]:has(.km-card-anchor) [data-testid="stDownloadButton"]{
+  max-width:880px;
+}
+[data-testid="column"]:has(.km-card-anchor) .stButton button,
+[data-testid="column"]:has(.km-card-anchor) [data-testid="stFormSubmitButton"] button{
+  width:auto; padding:.55rem 1rem;
+}
+
+/* chat bubbles */
+.km-chat{ max-height:320px; overflow:auto; padding-right:6px; }
+.km-msg{ margin:8px 0; padding:10px 12px; border-radius:12px; background:rgba(255,255,255,.92); }
+.km-msg.user{ border-left:4px solid #0D6EFD; }
+.km-msg.assistant{ border-left:4px solid #6633ff; }
+</style>
+
+<!-- clouds -->
+<div class="km-sky">
+  <div class="km-cloud c1"></div>
+  <div class="km-cloud c2"></div>
+  <div class="km-cloud c3"></div>
+  <div class="km-cloud c4"></div>
+  <div class="km-cloud c5"></div>
+</div>
+""", unsafe_allow_html=True)
 
 st.title("AI4KM (AI for Knowledge Marketplace) - Local PoC")
+left, right = st.columns([1, 1], gap="large")
 
-col1, col2 = st.columns(2)
-with col1:
-    if st.button("Data Ingestion", use_container_width=True):
-        st.session_state.mode = "ingest"
-with col2:
-    if st.button("Intelligent Search", use_container_width=True):
-        st.session_state.mode = "search"
-        st.session_state.chat_msgs = []
-        st.session_state.last_excel_bytes = b""
-        st.session_state.prev_query_vec = None
-        st.session_state.context_buffer = []
+# ---------------- LEFT: DATA INGESTION ----------------
+with left:
+    # mark this column as a card host (orange)
+    st.markdown('<i class="km-card-anchor" data-card="ingest"></i>', unsafe_allow_html=True)
 
-st.divider()
+    st.subheader("Data Ingestion")
+    st.caption("Submit new knowledge assets. I’ll extract Title, Summary, Benefits and index them.")
 
-# ---------- MODE: DATA INGESTION ----------
-if st.session_state.mode == "ingest":
-    st.subheader("Data Ingestion Mode")
-
-    if not st.session_state.ing_ready:
-        with st.form("ingestion_form"):
-            files = st.file_uploader(
-                "Attach reference file(s) (drag & drop)", accept_multiple_files=True,
-                type=["pdf","docx","xlsx","xls","txt","pptx"]
-            )
-            submitted = st.form_submit_button("Process")
-
-        if submitted:
-            if not files:
-                st.error("Please attach at least one file."); st.stop()
-
-            with st.spinner("Reading and consolidating files…"):
-                corpus = consolidate_files(files)
-                if not corpus.strip():
-                    st.error("No readable text found in the uploaded files."); st.stop()
-
-            # --- DEBUG: show & export the consolidated text corpus ---
-            with st.expander("🪲 Debug: Show consolidated corpus (first 10,000 chars)"):
-                st.caption(f"Corpus length: {len(corpus):,} characters")
-                st.text_area("corpus", value=corpus[:10000], height=300)
-            
-            st.download_button(
-                "⬇️ Download full corpus (debug)",
-                data=corpus.encode("utf-8", errors="ignore"),
-                file_name="debug_corpus.txt",
-                mime="text/plain",
-                use_container_width=True
-            )
-
-            # Parse metadata from text
-            parsed = extract_metadata_from_text(corpus)
-
-            # Validate parsed metadata
-            errors = []
-            if not parsed["email"] or not AMGEN_EMAIL_RE.match(parsed["email"]):
-                errors.append("Email (must be an @amgen.com address)")
-            if not parsed["site"] or not SITE_RE.match(parsed["site"]):
-                errors.append("Site (3-letter code, e.g., ASM)")
-            if not parsed["function"]:
-                errors.append("Function/Department")
-            if errors:
-                st.error(
-                    "I couldn't find valid values for:\n\n- " +
-                    "\n- ".join(errors) +
-                    "\n\nPlease make sure your file contains lines like:\n"
-                    "`Email: jdoe@amgen.com`, `Site: ASM`, `Function: Digital Technology & Innovation`"
-                )
-                st.stop()
-
-            with st.spinner("Generating Title, Content Summary and Benefits via LLM…"):
-                meta = llm_structured_extract(
-                    corpus,
-                    content_owner=parsed["email"],
-                    function=parsed["function"],
-                    site=parsed["site"]
-                )
-
-            st.session_state.ing_corpus = corpus
-            st.session_state.ing_meta = meta
-            st.session_state.ing_parsed_meta = parsed
-            st.session_state.ing_ready = True
+    # --- NEW: success panel without stopping the whole app ---
+    show_success_panel = (st.session_state.get("ing_flow_done") == "sp_ok")
+    if show_success_panel:
+        rid = st.session_state.get("ing_last_record_id", "")
+        st.success(f"✅ Submitted to SharePoint successfully. RecordId: {rid}")
+        if st.button("➕ Ingest another?"):
+            # clear post-submit flag and reset to fresh ingestion form
+            st.session_state.ing_flow_done = None
+            st.session_state.ing_last_record_id = None
             st.rerun()
+    # ----------------------------------------------------------
 
-    else:
-        meta = st.session_state.ing_meta or {}
-        parsed = st.session_state.ing_parsed_meta or {}
+    # Only render the draft/review + form when not in success state
+    if not show_success_panel:
+        if not st.session_state.ing_ready:
+            with st.form("ingestion_form_card", clear_on_submit=False):
+                st.markdown('<div class="km-pane">', unsafe_allow_html=True)
+                files = st.file_uploader(
+                    "Attach reference file(s) (drag & drop)",
+                    accept_multiple_files=True,
+                    type=["pdf","docx","xlsx","xls","txt","pptx"]
+                )
+                st.markdown('</div>', unsafe_allow_html=True)
+                submit_ing = st.form_submit_button("Process")
 
-        st.success("Draft extracted. Please review:")
-        st.write(f"**Title**: {meta.get('Title','')}")
-        st.write("**Content Summary**"); st.write(meta.get("ContentSummary",""))
-        st.write("**Benefits**"); st.write(meta.get("Benefits",""))
+            if submit_ing:
+                if not files:
+                    st.error("Please attach at least one file.")
+                else:
+                    with st.spinner("Reading and consolidating files…"):
+                        corpus = consolidate_files(files)
+                        if not corpus.strip():
+                            st.error("No readable text found in the uploaded files.")
+                        else:
+                            with st.expander("🪲 Debug: Show consolidated corpus (first 10,000 chars)"):
+                                st.caption(f"Corpus length: {len(corpus):,} characters")
+                                st.text_area("corpus", value=corpus[:10000], height=280)
+                            st.download_button(
+                                "⬇️ Download full corpus (debug)",
+                                data=corpus.encode("utf-8", errors="ignore"),
+                                file_name="debug_corpus.txt",
+                                mime="text/plain",
+                            )
+                            parsed = extract_metadata_from_text(corpus)
+                            errors = []
+                            if not parsed["email"] or not AMGEN_EMAIL_RE.match(parsed["email"]):
+                                errors.append("Email (must be an @amgen.com address)")
+                            if not parsed["site"] or not SITE_RE.match(parsed["site"]):
+                                errors.append("Site (3-letter code, e.g., ASM)")
+                            if not parsed["function"]:
+                                errors.append("Function/Department")
+                            if errors:
+                                st.error(
+                                    "I couldn't find valid values for:\n\n- "
+                                    + "\n- ".join(errors)
+                                    + "\n\nPlease make sure your file contains lines like:\n"
+                                    "`Email: jdoe@amgen.com`, `Site: ASM`, `Function: Digital Technology & Innovation`"
+                                )
+                            else:
+                                with st.spinner("Generating Title, Content Summary and Benefits via LLM…"):
+                                    meta = llm_structured_extract(
+                                        corpus,
+                                        content_owner=parsed["email"],
+                                        function=parsed["function"],
+                                        site=parsed["site"],
+                                    )
+                                st.session_state.ing_corpus = corpus
+                                st.session_state.ing_meta = meta
+                                st.session_state.ing_parsed_meta = parsed
+                                st.session_state.ing_ready = True
+                                st.rerun()
+        else:
+            meta = st.session_state.ing_meta or {}
+            parsed = st.session_state.ing_parsed_meta or {}
 
-        with st.expander("Parsed Metadata (from your files)"):
-            st.markdown(
-                f"- **Email**: `{parsed.get('email','')}`\n"
-                f"- **Site**: `{parsed.get('site','')}`\n"
-                f"- **Function**: `{parsed.get('function','')}`"
-            )
+            st.success("Draft extracted. Please review:")
+            st.markdown('<div class="km-pane">', unsafe_allow_html=True)
+            st.write(f"**Title**: {meta.get('Title','')}")
+            st.write("**Content Summary**"); st.write(meta.get("ContentSummary",""))
+            st.write("**Benefits**"); st.write(meta.get("Benefits",""))
+            st.markdown('</div>', unsafe_allow_html=True)
 
-        st.info("Do you want to submit a new knowledge asset?")
-        coly, coln = st.columns(2)
-        yes = coly.button("Yes — Submit", key="yes_submit")
-        no  = coln.button("No — Cancel", key="no_cancel")
-
-        if yes:
-            record_id = str(uuid.uuid4())
-            corpus = st.session_state.ing_corpus or ""
-            with st.spinner("Creating embedding and saving to vector DB…"):
-                doc_for_vector = corpus[:200000] if len(corpus) > 200000 else corpus
-                vec = embed_text(doc_for_vector)
-                upsert_asset_vector(
-                    record_id=record_id,
-                    text=doc_for_vector,
-                    metadata={
-                        "Title": meta.get("Title",""),
-                        "ContentOwner": meta.get("ContentOwner",""),
-                        "Function": meta.get("Function",""),
-                        "Site": meta.get("Site","")
-                    },
-                    vector=vec
+            with st.expander("Parsed Metadata (from your files)"):
+                st.markdown(
+                    f"- **Email**: `{parsed.get('email','')}`\n"
+                    f"- **Site**: `{parsed.get('site','')}`\n"
+                    f"- **Function**: `{parsed.get('function','')}`"
                 )
 
-            row = {"RecordId": record_id, **meta}
-            saved = False
-            if sharepoint_available():
-                st.write("Attempting SharePoint write…")
-                if sharepoint_add_item(row):
-                    saved = True
-            if not saved:
-                local_meta_upsert(row)
-                st.info("Saved locally (CSV). You can switch to SharePoint later by setting SHAREPOINT_ENABLED=true.")
+            st.info("Do you want to submit a new knowledge asset?")
+            coly, coln = st.columns(2)
+            yes = coly.button("Yes — Submit", key="yes_submit_card")
+            no  = coln.button("No — Cancel", key="no_cancel_card")
 
-            _reset_ingest_state()
-            st.success(f"New knowledge asset submitted with RecordId: {record_id}")
+            if yes:
+                record_id = str(uuid.uuid4())
+                corpus = st.session_state.ing_corpus or ""
+                with st.spinner("Creating embedding and saving to vector DB…"):
+                    doc_for_vector = corpus[:200000] if len(corpus) > 200000 else corpus
+                    vec = embed_text(doc_for_vector)
+                    upsert_asset_vector(
+                        record_id=record_id,
+                        text=doc_for_vector,
+                        metadata={
+                            "Title": meta.get("Title",""),
+                            "ContentOwner": meta.get("ContentOwner",""),
+                            "Function": meta.get("Function",""),
+                            "Site": meta.get("Site","")
+                        },
+                        vector=vec
+                    )
+                row = {"RecordId": record_id, **meta}
+                sp_ok = False
+                if sharepoint_available():
+                    st.write("Attempting SharePoint write…")
+                    if sharepoint_add_item(row):
+                        sp_ok = True
+                if not sp_ok:
+                    local_meta_upsert(row)
+                    st.info("Saved locally (CSV). You can switch to SharePoint later by setting SHAREPOINT_ENABLED=true.")
 
-            if st.button("Ingest another?", key="ingest_again"):
-                st.session_state.mode = "ingest"; st.rerun()
+                # clear draft state after submission attempt
+                st.session_state.ing_meta = None
+                st.session_state.ing_corpus = None
+                st.session_state.ing_ready = None
+                st.session_state.ing_parsed_meta = None
 
-        if no:
-            _reset_ingest_state(); st.session_state.mode = None; st.rerun()
+                # post-submit outcome
+                st.session_state.ing_last_record_id = record_id
+                st.session_state.ing_flow_done = "sp_ok" if sp_ok else None
 
-# ---------- MODE: INTELLIGENT SEARCH (Conversational RAG) ----------
-if st.session_state.mode == "search":
-    st.subheader("Intelligent Search (Conversational RAG)")
+                st.rerun()
 
-    # 1) If a suggestion button was clicked previously, auto-run it as a new turn
+            if no:
+                st.session_state.ing_meta = None
+                st.session_state.ing_corpus = None
+                st.session_state.ing_ready = None
+                st.session_state.ing_parsed_meta = None
+                st.rerun()
+
+# ---------------- RIGHT: INTELLIGENT SEARCH ----------------
+with right:
+    # mark this column as a card host (green)
+    st.markdown('<i class="km-card-anchor" data-card="search"></i>', unsafe_allow_html=True)
+
+    st.subheader("Intelligent Search")
+    st.caption("Ask about knowledge assets. I’ll retrieve, ground answers, and suggest follow-ups.")
+
     if st.session_state.pending_auto_query:
         auto_q = st.session_state.pending_auto_query
-        st.session_state.pending_auto_query = ""  # clear immediately to avoid double fire
+        st.session_state.pending_auto_query = ""
         with st.spinner("Searching and generating…"):
             _do_query_and_append(auto_q)
 
-    # 2) Handle manual user input (also wrapped in spinner)
-    user_input = st.chat_input("Ask about a knowledge asset or topic")
-    if user_input:
+    with st.form("search_form_card", clear_on_submit=True):
+        st.markdown('<div class="km-pane">', unsafe_allow_html=True)
+        user_input = st.text_input("Type your query",
+                                   key="search_query_card",
+                                   placeholder="e.g., What do you know about RMA?")
+        st.markdown('</div>', unsafe_allow_html=True)
+        submit_search = st.form_submit_button("Ask")
+
+    if submit_search and user_input:
         with st.spinner("Searching and generating…"):
             _do_query_and_append(user_input)
 
-    # 3) Single-pass render of the entire conversation history (in order)
-    for idx, m in enumerate(st.session_state.chat_msgs):
-        with st.chat_message(m["role"]):
-            st.write(m["content"])
-
-            # Per-turn results & per-turn download (assistant only)
-            if m["role"] == "assistant":
+    st.markdown('<div class="km-pane km-chat">', unsafe_allow_html=True)
+    if not st.session_state.chat_msgs:
+        st.caption("Your conversation will appear here.")
+    else:
+        for idx, m in enumerate(st.session_state.chat_msgs):
+            role = m["role"]
+            css_role = "user" if role == "user" else "assistant"
+            st.markdown(
+                f'<div class="km-msg {css_role}"><strong>{role.title()}:</strong><br>{m["content"]}</div>',
+                unsafe_allow_html=True
+            )
+            if role == "assistant":
                 if m.get("matches_df") is not None and isinstance(m["matches_df"], pd.DataFrame) and not m["matches_df"].empty:
                     st.dataframe(m["matches_df"], use_container_width=True)
                 if m.get("excel_bytes"):
@@ -887,30 +1019,27 @@ if st.session_state.mode == "search":
                         data=m["excel_bytes"],
                         file_name=f"ai4km_search_results_turn_{idx}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
                         key=f"dl_turn_{idx}"
                     )
-
-                # Suggestion chips
                 if m.get("suggestions"):
-                    st.markdown("**You could also ask:**")
-                    cols = st.columns(len(m["suggestions"]))
+                    st.write("**You could also ask:**")
+                    sug_cols = st.columns(len(m["suggestions"]))
                     for i, s in enumerate(m["suggestions"]):
-                        if cols[i].button(s, key=f"sugg_turn_{idx}_{i}"):
+                        if sug_cols[i].button(s, key=f"sugg_turn_{idx}_{i}"):
                             st.session_state.pending_auto_query = s
                             st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    # Sidebar
-    with st.sidebar:
-        st.markdown("### Search Session")
-        if st.button("🧹 Clear conversation"):
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🧹 Clear conversation", use_container_width=True):
             st.session_state.chat_msgs = []
             st.session_state.last_excel_bytes = b""
             st.session_state.prev_query_vec = None
             st.session_state.context_buffer = []
             st.session_state.pending_auto_query = ""
             st.rerun()
-
+    with c2:
         if st.session_state.last_excel_bytes:
             st.download_button(
                 "⬇️ Download most recent Top-3 (Excel)",
@@ -918,6 +1047,6 @@ if st.session_state.mode == "search":
                 file_name="ai4km_search_results.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
-                key="dl_latest"
+                key="dl_latest_card"
             )
 
