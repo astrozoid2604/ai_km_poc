@@ -928,6 +928,21 @@ with right:
         unsafe_allow_html=True
     )
 
+    # --- Role alignment overrides (User -> right, Assistant -> left) ---
+    st.markdown("""
+    <style>
+      .km-msg{ max-width:92%; }
+      .km-msg.user{
+        margin-left:auto; text-align:right;
+        border-left:none; border-right:4px solid #0D6EFD;
+      }
+      .km-msg.assistant{
+        margin-right:auto; text-align:left;
+        border-right:none; border-left:4px solid #6633ff;
+      }
+    </style>
+    """, unsafe_allow_html=True)
+
     # 1) Handle any auto-question first (from suggestion chips)
     if st.session_state.pending_auto_query:
         auto_q = st.session_state.pending_auto_query
@@ -945,10 +960,11 @@ with right:
 
     # 3) Scrollable chat box: render ONLY message bubbles inside it
     bubble_html_parts = []
-    if not st.session_state.chat_msgs:
+    msgs = st.session_state.chat_msgs or []
+    if not msgs:
         bubble_html_parts.append('<div class="km-note">Your conversation will appear here.</div>')
     else:
-        for m in st.session_state.chat_msgs:
+        for m in msgs:
             role = m.get("role", "assistant")
             css_role = "user" if role == "user" else "assistant"
             txt = m.get("content", "")
@@ -961,34 +977,30 @@ with right:
         unsafe_allow_html=True
     )
 
-    # 4) Render attachments (tables, downloads, suggestions) BELOW the chat box
-    if st.session_state.chat_msgs:
-        for idx, m in enumerate(st.session_state.chat_msgs):
-            if m.get("role") == "assistant":
-                # Matched results table
-                if isinstance(m.get("matches_df"), pd.DataFrame) and not m["matches_df"].empty:
-                    st.dataframe(m["matches_df"], use_container_width=True)
+    # 4) Render ONLY the latest assistant turn's attachments (DF + follow-ups)
+    last_asst_idx = None
+    for i in range(len(msgs) - 1, -1, -1):
+        if msgs[i].get("role") == "assistant":
+            last_asst_idx = i
+            break
 
-                # Per-turn Excel download
-                if m.get("excel_bytes"):
-                    st.download_button(
-                        "⬇️ Download this turn's Top-3 (Excel)",
-                        data=m["excel_bytes"],
-                        file_name=f"ai4km_search_results_turn_{idx}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key=f"dl_turn_{idx}"
-                    )
+    if last_asst_idx is not None:
+        last_asst = msgs[last_asst_idx]
 
-                # Follow-up suggestions
-                if m.get("suggestions"):
-                    st.write("**You could also ask:**")
-                    sug_cols = st.columns(len(m["suggestions"]))
-                    for i, s in enumerate(m["suggestions"]):
-                        if sug_cols[i].button(s, key=f"sugg_turn_{idx}_{i}"):
-                            st.session_state.pending_auto_query = s
-                            st.rerun()
+        # Latest results table (Update 1)
+        if isinstance(last_asst.get("matches_df"), pd.DataFrame) and not last_asst["matches_df"].empty:
+            st.dataframe(last_asst["matches_df"], use_container_width=True)
 
-    # 5) Controls row
+        # Latest follow-up suggestions (Update 2)
+        if last_asst.get("suggestions"):
+            st.write("**You could also ask:**")
+            sug_cols = st.columns(len(last_asst["suggestions"]))
+            for i, s in enumerate(last_asst["suggestions"]):
+                if sug_cols[i].button(s, key=f"sugg_turn_latest_{i}"):
+                    st.session_state.pending_auto_query = s
+                    st.rerun()
+
+    # 5) Controls row (Update 3 already applied by removing per-turn downloads)
     c1, c2 = st.columns(2)
     with c1:
         if st.button("🧹 Clear conversation", use_container_width=True):
