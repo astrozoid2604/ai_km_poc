@@ -353,10 +353,83 @@ def generate_answer_with_history(query: str,
     r = oai.chat.completions.create(model=GEN_MODEL, messages=msgs, temperature=0.2)
     return r.choices[0].message.content.strip()
 
+def suggest_followups(user_query: str, docs: List[Dict[str, Any]], answer: str, max_suggestions: int = 3) -> list[str]:
+    """
+    Proposes grounded, helpful next questions based on the current query, the retrieved docs' metadata,
+    and the assistant's answer. Returns <= max_suggestions items.
+    Falls back to deterministic ideas if LLM parsing fails.
+    """
+    # Build a compact doc context (titles + key metadata only)
+    if docs:
+        meta_lines = []
+        for i, d in enumerate(docs[:5], start=1):
+            meta_lines.append(
+                f"[Doc {i}] Title={d.get('Title','')[:140]} | Site={d.get('Site','')} | "
+                f"Function={d.get('Function','')} | Owner={d.get('ContentOwner','')}"
+            )
+        doc_meta = "\n".join(meta_lines)
+    else:
+        doc_meta = "No documents."
+
+    sys = (
+        "You are a helpful assistant that proposes follow-up questions.\n"
+        "Rules:\n"
+        "- Only suggest questions that can likely be answered from the provided documents' metadata or summaries.\n"
+        "- Keep each question short, specific, and non-redundant.\n"
+        "- Avoid generic tutorials or policy questions unless they clearly relate to the docs.\n"
+        "- Do NOT answer; just return a JSON object: {\"suggestions\": [\"...\", \"...\", \"...\"]}."
+    )
+    user = (
+        f"UserQuery:\n{user_query}\n\n"
+        f"Docs:\n{doc_meta}\n\n"
+        f"AssistantAnswer:\n{answer[:1200]}"
+    )
+
+    try:
+        r = oai.chat.completions.create(
+            model=GEN_MODEL,
+            messages=[{"role":"system","content":sys}, {"role":"user","content":user}],
+            temperature=0.2
+        )
+        j = _coerce_json(r.choices[0].message.content)
+        out = [s.strip() for s in (j.get("suggestions") or []) if isinstance(s, str) and s.strip()]
+        # Keep it tidy and unique
+        uniq = []
+        for s in out:
+            if s not in uniq:
+                uniq.append(s)
+        return uniq[:max_suggestions] if uniq else []
+    except Exception:
+        pass
+
+    # --- Deterministic fallbacks (grounded in metadata we often have)
+    fallbacks = []
+    # probe for metadata variety
+    sites = sorted({(d.get("Site") or "").strip() for d in docs if (d.get("Site") or "").strip()})
+    owners = sorted({(d.get("ContentOwner") or "").strip() for d in docs if (d.get("ContentOwner") or "").strip()})
+    funcs = sorted({(d.get("Function") or "").strip() for d in docs if (d.get("Function") or "").strip()})
+
+    if sites:
+        fallbacks.append("Which site(s) implemented similar improvements?")
+    if owners:
+        fallbacks.append("Who is the content owner for the top match?")
+    if funcs:
+        fallbacks.append("Which function is responsible for this asset?")
+    fallbacks.append("Can you summarize the key benefits mentioned?")
+    fallbacks.append("Show me more matches related to this topic.")
+
+    uniq_fb = []
+    for s in fallbacks:
+        if s not in uniq_fb:
+            uniq_fb.append(s)
+    return uniq_fb[:max_suggestions]
+
+
 def run_rag_turn(user_query: str,
                  prev_query_vec: List[float] | None,
                  context_buffer: List[Dict[str, Any]],
-                 topic_shift_threshold: float = 0.60) -> tuple[str, pd.DataFrame, bytes, List[float], List[Dict[str, Any]]]:
+                 topic_shift_threshold: float = 0.60
+                 ) -> tuple[str, pd.DataFrame, bytes, List[float], List[Dict[str, Any]], list[str]]:
     """
     One conversational RAG turn with topic-shift detection and context aggregation.
     Returns: (answer, out_df, excel_bytes, curr_query_vec, updated_context_buffer)
@@ -368,7 +441,8 @@ def run_rag_turn(user_query: str,
     hits = search_topk(user_query, k=3)
     if not hits:
         empty_df = pd.DataFrame(columns=["RecordId","Similarity","Title","ContentOwner","Function","Site"])
-        return ("I couldn't find relevant knowledge assets for that query.", empty_df, b"", curr_vec, context_buffer)
+        return ("I couldn't find relevant knowledge assets for that query.", empty_df, b"", curr_vec, context_buffer, [])
+    
 
     rows = []
     for h in hits:
@@ -408,13 +482,45 @@ def run_rag_turn(user_query: str,
     updated_buffer = list(dedup.values())[:6]
 
     answer = generate_answer_with_history(user_query, updated_buffer, st.session_state.chat_msgs)
+    suggestions = suggest_followups(user_query, updated_buffer, answer, max_suggestions=3)
 
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         out.to_excel(writer, index=False, sheet_name="Matches")
     excel_bytes = buffer.getvalue()
 
-    return answer, out, excel_bytes, curr_vec, updated_buffer
+    return answer, out, excel_bytes, curr_vec, updated_buffer, suggestions
+
+def _append_assistant_turn(answer: str, out_df: pd.DataFrame, excel_bytes: bytes, suggestions: list[str]):
+    """Append a single assistant message to chat state (no UI rendering here)."""
+    st.session_state.chat_msgs.append({
+        "role": "assistant",
+        "content": answer,
+        "matches_df": out_df,
+        "excel_bytes": excel_bytes,
+        "suggestions": suggestions,
+    })
+
+def _do_query_and_append(query: str):
+    """Run one RAG turn for `query`, update state, do not render. Rendering happens in the history loop."""
+    # user message
+    st.session_state.chat_msgs.append({"role": "user", "content": query})
+
+    # assistant computation
+    answer, out_df, excel_bytes, curr_vec, updated_buffer, suggestions = run_rag_turn(
+        query,
+        prev_query_vec=st.session_state.prev_query_vec,
+        context_buffer=st.session_state.context_buffer
+    )
+
+    # persist session state for next turns
+    st.session_state.prev_query_vec = curr_vec
+    st.session_state.context_buffer = updated_buffer
+    st.session_state.last_excel_bytes = excel_bytes
+
+    # append assistant message
+    _append_assistant_turn(answer, out_df, excel_bytes, suggestions)
+
 
 # ========== File parsers ==========
 from PyPDF2 import PdfReader
@@ -590,9 +696,11 @@ for k in ["ing_meta", "ing_corpus", "ing_ready", "ing_last_record_id", "ing_pars
         st.session_state[k] = None
 
 # chat state (search)
-for k in ["chat_msgs", "last_excel_bytes", "prev_query_vec", "context_buffer"]:
+for k in ["chat_msgs", "last_excel_bytes", "prev_query_vec", "context_buffer", "pending_auto_query"]:
     if k not in st.session_state:
         st.session_state[k] = None
+if st.session_state.pending_auto_query is None:
+    st.session_state.pending_auto_query = ""
 if st.session_state.chat_msgs is None:
     st.session_state.chat_msgs = []
 if st.session_state.last_excel_bytes is None:
@@ -751,51 +859,46 @@ if st.session_state.mode == "ingest":
 if st.session_state.mode == "search":
     st.subheader("Intelligent Search (Conversational RAG)")
 
-    # Render conversation so far
-    for m in st.session_state.chat_msgs:
-        with st.chat_message(m["role"]):
-            st.write(m["content"])
-            if m.get("matches_df") is not None:
-                st.dataframe(m["matches_df"], use_container_width=True)
-            if m.get("excel_bytes"):
-                st.download_button(
-                    "⬇️ Download this turn's Top-3 (Excel)",
-                    data=m["excel_bytes"],
-                    file_name="ai4km_search_results.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                    key=f"dl_{hash(m['excel_bytes'])}"
-                )
+    # 1) If a suggestion button was clicked previously, auto-run it as a new turn
+    if st.session_state.pending_auto_query:
+        auto_q = st.session_state.pending_auto_query
+        st.session_state.pending_auto_query = ""  # clear immediately to avoid double fire
+        with st.spinner("Searching and generating…"):
+            _do_query_and_append(auto_q)
 
-    # Chat input
+    # 2) Handle manual user input (also wrapped in spinner)
     user_input = st.chat_input("Ask about a knowledge asset or topic")
     if user_input:
-        st.session_state.chat_msgs.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.write(user_input)
+        with st.spinner("Searching and generating…"):
+            _do_query_and_append(user_input)
 
-        with st.chat_message("assistant"):
-            with st.spinner("Searching and generating…"):
-                answer, out_df, excel_bytes, curr_vec, updated_buffer = run_rag_turn(
-                    user_input,
-                    prev_query_vec=st.session_state.prev_query_vec,
-                    context_buffer=st.session_state.context_buffer
-                )
+    # 3) Single-pass render of the entire conversation history (in order)
+    for idx, m in enumerate(st.session_state.chat_msgs):
+        with st.chat_message(m["role"]):
+            st.write(m["content"])
 
-            st.write(answer)
-            if not out_df.empty:
-                st.dataframe(out_df, use_container_width=True)
+            # Per-turn results & per-turn download (assistant only)
+            if m["role"] == "assistant":
+                if m.get("matches_df") is not None and isinstance(m["matches_df"], pd.DataFrame) and not m["matches_df"].empty:
+                    st.dataframe(m["matches_df"], use_container_width=True)
+                if m.get("excel_bytes"):
+                    st.download_button(
+                        "⬇️ Download this turn's Top-3 (Excel)",
+                        data=m["excel_bytes"],
+                        file_name=f"ai4km_search_results_turn_{idx}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key=f"dl_turn_{idx}"
+                    )
 
-            st.session_state.prev_query_vec = curr_vec
-            st.session_state.context_buffer = updated_buffer
-            st.session_state.last_excel_bytes = excel_bytes
-
-            st.session_state.chat_msgs.append({
-                "role": "assistant",
-                "content": answer,
-                "matches_df": out_df,
-                "excel_bytes": excel_bytes
-            })
+                # Suggestion chips
+                if m.get("suggestions"):
+                    st.markdown("**You could also ask:**")
+                    cols = st.columns(len(m["suggestions"]))
+                    for i, s in enumerate(m["suggestions"]):
+                        if cols[i].button(s, key=f"sugg_turn_{idx}_{i}"):
+                            st.session_state.pending_auto_query = s
+                            st.rerun()
 
     # Sidebar
     with st.sidebar:
@@ -805,6 +908,7 @@ if st.session_state.mode == "search":
             st.session_state.last_excel_bytes = b""
             st.session_state.prev_query_vec = None
             st.session_state.context_buffer = []
+            st.session_state.pending_auto_query = ""
             st.rerun()
 
         if st.session_state.last_excel_bytes:
@@ -813,6 +917,7 @@ if st.session_state.mode == "search":
                 data=st.session_state.last_excel_bytes,
                 file_name="ai4km_search_results.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
+                use_container_width=True,
+                key="dl_latest"
             )
 
