@@ -618,7 +618,7 @@ def extract_metadata_from_text(corpus: str) -> Dict[str, str]:
     return {"email": email, "site": site, "function": function}
 
 # ========== UI ==========
-st.set_page_config(page_title="AI4KM RAG Pipeline", page_icon="💡", layout="wide")
+st.set_page_config(page_title="AI-Powered Enterprise Knowledge Fabric", page_icon="💡", layout="wide")
 
 # ---------- Session keys ----------
 def _reset_ingest_state():
@@ -859,7 +859,7 @@ header[data-testid="stHeader"], .block-container{ position:relative; z-index:1; 
 </div>
 """, unsafe_allow_html=True)
 
-st.title("AI4KM (AI for Knowledge Marketplace)")
+st.title("[AskBob] AI-Powered Enterprise Knowledge Fabric")
 left, right = st.columns([1, 1], gap="large")
 
 # ---------------- LEFT: DATA INGESTION ----------------
