@@ -10,9 +10,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-import base64
-import streamlit.components.v1 as components
-
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -620,180 +617,6 @@ def extract_metadata_from_text(corpus: str) -> Dict[str, str]:
         function = to_title_case_words(function_candidate)
     return {"email": email, "site": site, "function": function}
 
-def add_pixishark_layer(image_path="assets/shark.png", shark_count=6):
-    """Full-viewport PixiJS canvas behind the app with depth + distribution."""
-    import base64
-    import streamlit.components.v1 as components
-    with open(image_path, "rb") as f:
-        data_url = "data:image/png;base64," + base64.b64encode(f.read()).decode("ascii")
-
-    html = r"""
-<div id="pixi-shark-layer" style="position:fixed;inset:0;pointer-events:none;"></div>
-<script>
-(function(){
-  // Make the iframe itself a fixed, full-viewport layer *under* the UI
-  const me = window.frameElement;
-  if (me){
-    me.style.position = 'fixed';
-    me.style.left = '0';
-    me.style.top = '0';
-    me.style.width = '100vw';
-    me.style.height = '100vh';
-    me.style.zIndex = '1';            // sharks layer
-    me.style.pointerEvents = 'none';
-    me.style.background = 'transparent';
-  }
-
-  if (window.__KM_PIXI_ACTIVE__) return;
-  window.__KM_PIXI_ACTIVE__ = true;
-
-  function loadPixi(){
-    const urls = [
-      'https://cdnjs.cloudflare.com/ajax/libs/pixi.js/6.5.8/browser/pixi.min.js',
-      'https://cdn.jsdelivr.net/npm/pixi.js@6.5.8/dist/browser/pixi.min.js',
-      'https://unpkg.com/pixi.js@6.5.8/dist/browser/pixi.min.js'
-    ];
-    let i=0;
-    return new Promise(function tryNext(resolve, reject){
-      if (i>=urls.length) return reject(new Error('All PIXI CDNs failed'));
-      const s=document.createElement('script');
-      s.src=urls[i++]; s.onload=resolve; s.onerror=()=>tryNext(resolve,reject);
-      document.head.appendChild(s);
-    });
-  }
-
-  loadPixi().then(()=>{
-    const host = document.getElementById('pixi-shark-layer');
-    const app  = new PIXI.Application({transparent:true, antialias:true, resizeTo:window});
-    host.appendChild(app.view);
-
-    const COUNT   = %d;
-    const IMG_SRC = "%s";
-    const COLS=24, ROWS=4;
-
-    const baseTex = PIXI.Texture.from(IMG_SRC);
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-    // pick whichever SimplePlane symbol exists in this Pixi build
-    const SimplePlaneCtor = PIXI.SimplePlane
-      || (PIXI.mesh && PIXI.mesh.SimplePlane)
-      || (PIXI.meshSimple && PIXI.meshSimple.SimplePlane);
-    if (!SimplePlaneCtor) throw new Error('SimplePlane plugin not found');
-
-    const topSafe = 120;                // avoid your title/header area
-    const bottomSafe = 110;             // avoid hugging the very bottom
-    
-    function spawnY(index, total){
-      const H = app.renderer.height;
-      const span = Math.max(80, H - topSafe - bottomSafe);
-    
-      // evenly distribute lanes, then add some jitter so it’s not too rigid
-      const lane = span / (total + 1);
-      const baseY = topSafe + lane * (index + 1);
-      const jitter = (Math.random() - 0.5) * lane * 0.4; // up to ±40 percent lane height
-      return baseY + jitter;
-    }
-    
-    function spawnX(width, index){
-      const base = -width * 0.5 - 150;
-    
-      // stagger start so they don’t all line up together
-      const extra = index * (app.renderer.width * 0.35);
-      const jitter = Math.random() * 200;
-    
-      return base - extra - jitter;
-    }
-
-    function makeSwimmer(index, total){
-      const plane = new SimplePlaneCtor(baseTex, COLS, ROWS);
-      const fish  = new PIXI.Container();
-    
-      // depth: scale 0.22 .. 0.70 (smaller == farther)
-      const scale = 0.22 + Math.random()*0.48;
-      fish.scale.set(scale);
-    
-      // ---------- shadow (center-locked & overlapped) ----------
-      const texW = baseTex.width, texH = baseTex.height;
-      const sh = new PIXI.Graphics();
-      const shadowW = texW * 0.42, shadowH = texH * 0.09;
-      sh.beginFill(0x000000, 0.22).drawEllipse(0, 0, shadowW, shadowH).endFill();
-      sh.position.set(texW * 0.50, texH * 0.60);
-      if (PIXI.filters && PIXI.filters.BlurFilter){
-        const blur = new PIXI.filters.BlurFilter(3);
-        blur.quality = 1;
-        blur.repeatEdgePixels = true;
-        sh.filters = [blur];
-      }
-      sh.blendMode = PIXI.BLEND_MODES.MULTIPLY;
-    
-      fish.sortableChildren = true;
-      sh.zIndex = 0; plane.zIndex = 1;
-      fish.addChild(sh);
-      fish.addChild(plane);
-    
-      // parallax: speed and opacity by depth
-      const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-      const speed = (0.6 + scale*1.6) * (reduced ? 0.6 : 1.0);
-      fish.alpha = (scale < 0.30) ? 0.85 : 1.0;
-      if (PIXI.filters && PIXI.filters.BlurFilter && scale < 0.30){
-        fish.filters = [new PIXI.filters.BlurFilter(1.2)];
-      }
-    
-      // initial place (USE index/total!)
-      app.stage.addChild(fish);
-      fish.y = spawnY(index, total);
-      fish.x = spawnX(fish.width, index);
-    
-      // wave params (bigger fish wag a bit wider)
-      const buf = plane.geometry.getBuffer('aVertexPosition');
-      const baseVerts = buf.data.slice(), cols=COLS, rows=ROWS;
-      const ampPx = (6 + scale*10) * (reduced ? 0.5 : 1.0);
-      const hz    = 0.9 + Math.random()*0.5;
-      let t = Math.random()*Math.PI*2;
-    
-      function update(dt){
-        t += (dt/60) * (reduced ? 0.35 : 1.0);
-        const verts = buf.data;
-        for (let r=0; r<rows; r++){
-          for (let c=0; c<cols; c++){
-            const i=(r*cols+c)*2, x0=baseVerts[i], y0=baseVerts[i+1];
-            const prog=c/(cols-1), tail=1.0-prog;
-            const wave=Math.sin(t*2*Math.PI*hz + prog*3.2);
-            verts[i]   = x0;
-            verts[i+1] = y0 + wave*ampPx*tail;
-          }
-        }
-        buf.update();
-    
-        fish.x += speed * dt;
-        fish.y += Math.sin(t*1.2) * 0.15;
-    
-        // recycle when off-screen right (USE index/total!)
-        if (fish.x - fish.width*0.5 > app.renderer.width + 60){
-          fish.y = spawnY(index, total);
-          fish.x = spawnX(fish.width, index);
-          t = Math.random()*Math.PI*2;
-        }
-      }
-      return { update };
-    }
-    
-    // create swimmers (PASS i, COUNT)
-    const swimmers = [];
-    for (let i = 0; i < COUNT; i++) {
-      swimmers.push(makeSwimmer(i, COUNT));
-    }
-    
-    // keep the ticker
-    app.ticker.add(dt => swimmers.forEach(s => s.update(dt)));
-
-
-  }).catch(console.error);
-})();
-</script>
-"""
-    components.html(html % (shark_count, data_url), height=1, scrolling=False)
-
 # ========== UI ==========
 st.set_page_config(page_title="AI-Powered Enterprise Knowledge Fabric", page_icon="💡", layout="wide")
 
@@ -835,9 +658,71 @@ html, body, [data-testid="stAppViewContainer"] { height: 100%; margin: 0; }
   background: radial-gradient(circle at center,
     #e6f2ff 0%, #cfe7ff 26%, #84bdfd 48%, #3c87d3 70%, #183160 90%, #09152d 100%);
 }
+header[data-testid="stHeader"], .block-container{ position:relative; z-index:1; }
 
-/* Make the UI clearly above the sharks layers (which is z-index:1) */
-header[data-testid="stHeader"], .block-container{ position:relative; z-index:10; }
+/* ----- Clouds (base layer) ----- */
+.km-sky{
+  position: fixed; inset: 0; overflow: hidden;
+  pointer-events: none; z-index:0;
+}
+/* yellow→white clouds */
+:root{
+  /* tweak these three to taste */
+  --cloud-core: #ffd400;   /* bright yellow center */
+  --cloud-mid:  #fff4a3;   /* soft pale yellow */
+  --cloud-edge: #ffffff;   /* white at edges */
+}
+.km-cloud{
+  position: absolute; left: -40vw;
+  width: 36vw; max-width: 520px; aspect-ratio: 16/9;
+  opacity:.95;
+  /* add a warm-ish glow */
+  filter: drop-shadow(0 12px 16px rgba(255,208,0,.12));
+  animation: cloudDrift var(--dur,22s) linear infinite;
+  animation-delay: var(--delay,0s);
+
+  /* each “puff” now blends from yellow center → white edge → transparent */
+  background:
+    radial-gradient(35% 45% at 20% 65%,
+      var(--cloud-core) 0 2%,
+      var(--cloud-mid)  35%,
+      var(--cloud-edge) 60%,
+      transparent 61%),
+    radial-gradient(40% 50% at 40% 55%,
+      var(--cloud-core) 0 2%,
+      var(--cloud-mid)  34%,
+      var(--cloud-edge) 60%,
+      transparent 61%),
+    radial-gradient(45% 52% at 60% 58%,
+      var(--cloud-core) 0 2%,
+      var(--cloud-mid)  38%,
+      var(--cloud-edge) 60%,
+      transparent 61%),
+    radial-gradient(34% 44% at 75% 62%,
+      var(--cloud-core) 0 2%,
+      var(--cloud-mid)  32%,
+      var(--cloud-edge) 60%,
+      transparent 61%),
+    radial-gradient(30% 40% at 50% 40%,
+      var(--cloud-core) 0 2%,
+      var(--cloud-mid)  30%,
+      var(--cloud-edge) 60%,
+      transparent 61%),
+    radial-gradient(60% 55% at 50% 70%,
+      var(--cloud-core) 0 2%,
+      var(--cloud-mid)  40%,
+      var(--cloud-edge) 62%,
+      transparent 63%);
+}
+.km-cloud.c1{top:18%; --scale:.95; --dur:18s; --delay:-8s;}
+.km-cloud.c2{top:32%; --scale:.85; --dur:20s; --delay:-14s;}
+.km-cloud.c3{top:46%; --scale:1.05; --dur:19s; --delay:-4s;}
+.km-cloud.c4{top:60%; --scale:.92; --dur:21s; --delay:-20s;}
+.km-cloud.c5{top:72%; --scale:1.15; --dur:22s; --delay:-10s;}
+@keyframes cloudDrift{
+  from{transform:translateX(0) translateY(-50%) scale(var(--scale,1));}
+  to  {transform:translateX(200vw) translateY(-50%) scale(var(--scale,1));}
+}
 
 /* ===== Card wrappers (reliable, visible colors) ===== */
 .km-card{
@@ -846,7 +731,7 @@ header[data-testid="stHeader"], .block-container{ position:relative; z-index:10;
   margin: 6px 8px 10px;
   box-shadow: 0 14px 30px rgba(0,0,0,.18);
   position: relative;
-  z-index: 20; /* above shark */
+  z-index: 2; /* above clouds */
 }
 
 /* Bright SOLID backgrounds (no gradients to avoid blending with sky) */
@@ -964,6 +849,14 @@ header[data-testid="stHeader"], .block-container{ position:relative; z-index:10;
 
 </style>
 
+<!-- clouds -->
+<div class="km-sky">
+  <div class="km-cloud c1"></div>
+  <div class="km-cloud c2"></div>
+  <div class="km-cloud c3"></div>
+  <div class="km-cloud c4"></div>
+  <div class="km-cloud c5"></div>
+</div>
 """, unsafe_allow_html=True)
 
 st.title("[AskBob] AI-Powered Enterprise Knowledge Fabric")
@@ -1223,7 +1116,3 @@ with right:
             )
 
     st.markdown('</div>', unsafe_allow_html=True)  # close green card
-
-if "pixi_shark_layer_added" not in st.session_state:
-    add_pixishark_layer(image_path="assets/shark.png", shark_count=1)
-    st.session_state["pixi_shark_layer_added"] = True
