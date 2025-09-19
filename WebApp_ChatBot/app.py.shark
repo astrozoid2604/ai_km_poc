@@ -882,6 +882,25 @@ if st.session_state.context_buffer is None:
 st.markdown("""
 <style>
 
+/* ---- Safari scale normalization (put this at the very top) ---- */
+/* Prevent Safari’s text auto-zoom and gently reduce the root font size */
+html { -webkit-text-size-adjust: 100%; }
+
+/* Reduce base REM size only on Safari (desktop + iOS) */
+@supports (-webkit-hyphens:none) and (not (hyphens:none)) {
+  :root { font-size: 14px; }  /* ~90% of default 16px; tweak to 13px if needed */
+}
+
+/* Fallback: if a quirky Safari build misses the @supports test */
+@media not all and (min-resolution: .001dpcm) {
+  @supports (-webkit-appearance:none) {
+    :root { font-size: 14px; }
+  }
+}
+
+/* (Optional) If you still see large controls in Safari, uncomment the line below */
+/* body { font-size: 0.9rem; } */
+
 /* ===== SCROLL-SAFE PAGE + PIXI OVERLAY BASELINE (paste at top) ===== */
 
 /* Let the document grow and scroll (Safari/iOS friendly) */
