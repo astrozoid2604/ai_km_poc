@@ -631,7 +631,7 @@ def add_pixishark_layer(image_path="assets/shark.png", shark_count=6, wag_intens
 <div id="pixi-shark-layer" style="position:fixed;inset:0;pointer-events:none;"></div>
 <script>
 (function(){
-  // Make the iframe itself a fixed, full-viewport layer *under* the UI
+  // Keep the iframe fixed under the UI
   const me = window.frameElement;
   if (me){
     me.style.position = 'fixed';
@@ -639,13 +639,12 @@ def add_pixishark_layer(image_path="assets/shark.png", shark_count=6, wag_intens
     me.style.top = '0';
     me.style.width = '100vw';
     me.style.height = '100vh';
-    me.style.zIndex = '1';            // sharks layer
+    me.style.zIndex = '1';
     me.style.pointerEvents = 'none';
     me.style.background = 'transparent';
   }
 
-  if (window.__KM_PIXI_ACTIVE__) return;
-  window.__KM_PIXI_ACTIVE__ = true;
+  // NOTE: DO NOT early-return with a global flag here, because each rerun is a fresh iframe.
 
   function loadPixi(){
     const urls = [
@@ -666,54 +665,62 @@ def add_pixishark_layer(image_path="assets/shark.png", shark_count=6, wag_intens
     const host = document.getElementById('pixi-shark-layer');
     const app  = new PIXI.Application({transparent:true, antialias:true, resizeTo:window});
     host.appendChild(app.view);
+    app.ticker.autoStart = true;
+    app.ticker.start(); // ensure running now
+
+    // ---- Resume on Safari’s lifecycle quirks ----
+    function resume(){
+      if (app.ticker && !app.ticker.started) app.ticker.start();
+    }
+    window.addEventListener('focus', resume, {passive:true});
+    document.addEventListener('visibilitychange', ()=>{
+      if (!document.hidden) resume();
+    }, {passive:true});
+    // Handle bfcache / page show on Safari/iOS
+    window.addEventListener('pageshow', ()=>resume(), {passive:true});
 
     const COUNT   = %d;
     const IMG_SRC = "%s";
     const COLS=24, ROWS=4;
-    const WAG_IN = Math.max(0, Math.min(3, %f)); // clamp 0..3 (0 = rigid, 1 = normal, 2 = extra wag)
+    const WAG_IN = Math.max(0, Math.min(3, %f));
 
     const baseTex = PIXI.Texture.from(IMG_SRC);
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-    // pick whichever SimplePlane symbol exists in this Pixi build
+    // pick whichever SimplePlane symbol exists
     const SimplePlaneCtor = PIXI.SimplePlane
       || (PIXI.mesh && PIXI.mesh.SimplePlane)
       || (PIXI.meshSimple && PIXI.meshSimple.SimplePlane);
     if (!SimplePlaneCtor) throw new Error('SimplePlane plugin not found');
 
-    const topSafe = 120;                // avoid your title/header area
-    const bottomSafe = 110;             // avoid hugging the very bottom
-    
+    const topSafe = 120;
+    const bottomSafe = 110;
+
     function spawnY(index, total){
       const H = app.renderer.height;
       const span = Math.max(80, H - topSafe - bottomSafe);
-    
-      // evenly distribute lanes, then add some jitter so it’s not too rigid
       const lane = span / (total + 1);
       const baseY = topSafe + lane * (index + 1);
-      const jitter = (Math.random() - 0.5) * lane * 0.4; // up to ±40 percent lane height
+      const jitter = (Math.random() - 0.5) * lane * 0.4;
       return baseY + jitter;
     }
-    
+
     function spawnX(width, index){
       const base = -width * 0.5 - 150;
-    
-      // stagger start so they don’t all line up together
       const extra = index * (app.renderer.width * 0.35);
       const jitter = Math.random() * 200;
-    
       return base - extra - jitter;
     }
 
     function makeSwimmer(index, total){
       const plane = new SimplePlaneCtor(baseTex, COLS, ROWS);
       const fish  = new PIXI.Container();
-    
-      // depth: scale 0.22 .. 0.70 (smaller == farther)
-      const scale = (0.22 + Math.random()*0.48)*0.7;
+
+      // ~40 percent smaller overall, still varying for depth
+      const scale = (0.22 + Math.random()*0.48) * 0.60;
       fish.scale.set(scale);
-    
-      // ---------- shadow (center-locked & overlapped) ----------
+
+      // shadow
       const texW = baseTex.width, texH = baseTex.height;
       const sh = new PIXI.Graphics();
       const shadowW = texW * 0.42, shadowH = texH * 0.09;
@@ -726,45 +733,39 @@ def add_pixishark_layer(image_path="assets/shark.png", shark_count=6, wag_intens
         sh.filters = [blur];
       }
       sh.blendMode = PIXI.BLEND_MODES.MULTIPLY;
-    
+
       fish.sortableChildren = true;
       sh.zIndex = 0; plane.zIndex = 1;
       fish.addChild(sh);
       fish.addChild(plane);
-    
-      // parallax: speed and opacity by depth
-      const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+      // parallax: speed/alpha by depth
       const speed = (0.6 + scale*1.6) * (reduced ? 0.6 : 1.0);
       fish.alpha = (scale < 0.30) ? 0.85 : 1.0;
       if (PIXI.filters && PIXI.filters.BlurFilter && scale < 0.30){
         fish.filters = [new PIXI.filters.BlurFilter(1.2)];
       }
-    
-      // initial place (USE index/total!)
+
       app.stage.addChild(fish);
       fish.y = spawnY(index, total);
       fish.x = spawnX(fish.width, index);
 
-      // --- sinusoidal path params (per fish) ---
-      let yBase  = fish.y;                                  // lane center
-      const yAmp = (14 + scale * 32) * (reduced ? 0.5 : 1); // vertical amplitude
-      const yHz  = 0.18 + Math.random() * 0.22;             // 0.18–0.40 Hz
-      let yPhase = Math.random() * Math.PI * 2;             // starting phase
-    
-      // wave params (bigger fish wag a bit wider)
+      // sinusoidal swim path
+      let yBase  = fish.y;
+      const yAmp = (14 + scale * 32) * (reduced ? 0.5 : 1);
+      const yHz  = 0.18 + Math.random() * 0.22;
+      let yPhase = Math.random() * Math.PI * 2;
+
+      // tail wag
       const buf = plane.geometry.getBuffer('aVertexPosition');
       const baseVerts = buf.data.slice(), cols=COLS, rows=ROWS;
-      // wag intensity: scale amplitude and slightly the frequency
       const ampPx = (6 + scale*10) * (reduced ? 0.5 : 1.0) * (0.25 + 0.75 * WAG_IN);
-      // frequency gets a subtle boost with intensity to avoid floppy look
       const hz    = (0.9 + Math.random()*0.5) * (0.85 + 0.30 * Math.min(WAG_IN, 2.0));
       let t = Math.random()*Math.PI*2;
-    
+
       function update(dt){
-        // time accumulator for tail + path
         t += (dt/60) * (reduced ? 0.35 : 1.0);
-      
-        // tail deformation (unchanged)
+
         const verts = buf.data;
         for (let r=0; r<rows; r++){
           for (let c=0; c<cols; c++){
@@ -776,42 +777,33 @@ def add_pixishark_layer(image_path="assets/shark.png", shark_count=6, wag_intens
           }
         }
         buf.update();
-      
-        // horizontal motion
+
         fish.x += speed * dt;
-      
-        // vertical sinusoid around lane center (remove the old tiny bob)
         fish.y = yBase + Math.sin(t * 2*Math.PI * yHz + yPhase) * yAmp;
-      
-        // recycle when off-screen right
+
         if (fish.x - fish.width*0.5 > app.renderer.width + 60){
-          // new lane + new phase (keeps things varied)
           yBase  = spawnY(index, total);
           yPhase = Math.random() * Math.PI * 2;
-      
           fish.y = yBase;
           fish.x = spawnX(fish.width, index);
           t = Math.random()*Math.PI*2;
         }
       }
-
       return { update };
     }
-    
-    // create swimmers (PASS i, COUNT)
+
     const swimmers = [];
-    for (let i = 0; i < COUNT; i++) {
-      swimmers.push(makeSwimmer(i, COUNT));
-    }
-    
-    // keep the ticker
+    for (let i = 0; i < COUNT; i++) swimmers.push(makeSwimmer(i, COUNT));
+
     app.ticker.add(dt => swimmers.forEach(s => s.update(dt)));
 
-
+    // Safety: if the canvas ever stops being connected, try to resume ticker.
+    setInterval(()=>resume(), 2000);
   }).catch(console.error);
 })();
 </script>
 """
+    # Use a stable key so Streamlit won't duplicate the component if position shifts
     components.html(html % (shark_count, data_url, wag_intensity), height=1, scrolling=False)
 
 # ========== UI ==========
@@ -1244,6 +1236,5 @@ with right:
 
     st.markdown('</div>', unsafe_allow_html=True)  # close green card
 
-if "pixi_shark_layer_added" not in st.session_state:
-    add_pixishark_layer(image_path="assets/shark.png", shark_count=2, wag_intensity=1.9)
-    st.session_state["pixi_shark_layer_added"] = True
+# Always (re)mount the background layer each rerun
+add_pixishark_layer(image_path="assets/shark.png", shark_count=2, wag_intensity=1.9)
