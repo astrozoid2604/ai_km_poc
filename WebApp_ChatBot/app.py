@@ -621,32 +621,42 @@ def extract_metadata_from_text(corpus: str) -> Dict[str, str]:
     return {"email": email, "site": site, "function": function}
 
 def add_pixishark_layer(image_path="assets/shark.png", shark_count=6, wag_intensity: float = 1.0):
-    """Full-viewport PixiJS canvas behind the app with depth + distribution."""
+    """Mount/refresh a single PIXI overlay in the parent page (scroll-safe, Safari-friendly)."""
     import base64
     import streamlit.components.v1 as components
     with open(image_path, "rb") as f:
         data_url = "data:image/png;base64," + base64.b64encode(f.read()).decode("ascii")
 
     html = r"""
-<div id="pixi-shark-layer" style="position:fixed;inset:0;pointer-events:none;"></div>
 <script>
 (function(){
-  // Keep the iframe fixed under the UI
-  const me = window.frameElement;
-  if (me){
-    me.style.position = 'fixed';
-    me.style.left = '0';
-    me.style.top = '0';
-    me.style.width = '100vw';
-    me.style.height = '100vh';
-    me.style.zIndex = '1';
-    me.style.pointerEvents = 'none';
-    me.style.background = 'transparent';
+  // Build (or reuse) a single overlay in the *parent* page so scrolling isn't affected.
+  const P = window.parent;
+  const PDoc = P && P.document;
+
+  // If we can't access parent (very unlikely in Streamlit), bail silently.
+  if (!P || !PDoc) { console.warn('Parent document not accessible.'); return; }
+
+  // Create or reuse the fixed, non-interactive overlay host in the parent page.
+  function ensureHost(){
+    let host = PDoc.getElementById('km-pixi-overlay');
+    if (!host){
+      host = PDoc.createElement('div');
+      host.id = 'km-pixi-overlay';
+      host.style.position = 'fixed';
+      host.style.inset = '0';
+      host.style.pointerEvents = 'none';
+      host.style.zIndex = '1';             // UI remains above (z>=10 in your CSS)
+      host.style.background = 'transparent';
+      host.setAttribute('aria-hidden', 'true');
+      PDoc.body.appendChild(host);
+    }
+    return host;
   }
 
-  // NOTE: DO NOT early-return with a global flag here, because each rerun is a fresh iframe.
-
-  function loadPixi(){
+  // Load PIXI into the parent page if not present (one time).
+  function loadPixiInParent(){
+    if (P.PIXI) return Promise.resolve();
     const urls = [
       'https://cdnjs.cloudflare.com/ajax/libs/pixi.js/6.5.8/browser/pixi.min.js',
       'https://cdn.jsdelivr.net/npm/pixi.js@6.5.8/dist/browser/pixi.min.js',
@@ -655,46 +665,50 @@ def add_pixishark_layer(image_path="assets/shark.png", shark_count=6, wag_intens
     let i=0;
     return new Promise(function tryNext(resolve, reject){
       if (i>=urls.length) return reject(new Error('All PIXI CDNs failed'));
-      const s=document.createElement('script');
+      const s=PDoc.createElement('script');
       s.src=urls[i++]; s.onload=resolve; s.onerror=()=>tryNext(resolve,reject);
-      document.head.appendChild(s);
+      PDoc.head.appendChild(s);
     });
   }
 
-  loadPixi().then(()=>{
-    const host = document.getElementById('pixi-shark-layer');
-    const app  = new PIXI.Application({transparent:true, antialias:true, resizeTo:window});
-    host.appendChild(app.view);
-    app.ticker.autoStart = true;
-    app.ticker.start(); // ensure running now
+  loadPixiInParent().then(()=>{
 
-    // ---- Resume on Safari’s lifecycle quirks ----
-    function resume(){
-      if (app.ticker && !app.ticker.started) app.ticker.start();
+    const host = ensureHost();
+
+    // Reuse or create a single PIXI app in the parent.
+    let app = P.__KM_PIXI_APP__;
+    if (!app){
+      app = new P.PIXI.Application({ transparent:true, antialias:true, resizeTo:P });
+      host.appendChild(app.view);
+      P.__KM_PIXI_APP__ = app;
+      app.ticker.autoStart = true;
+      app.ticker.start();
+    }else{
+      // ensure canvas attached (in case DOM was rebuilt)
+      if (app.view && !host.contains(app.view)) host.appendChild(app.view);
+      if (!app.ticker.started) app.ticker.start();
     }
-    window.addEventListener('focus', resume, {passive:true});
-    document.addEventListener('visibilitychange', ()=>{
-      if (!document.hidden) resume();
-    }, {passive:true});
-    // Handle bfcache / page show on Safari/iOS
-    window.addEventListener('pageshow', ()=>resume(), {passive:true});
 
+    // ---- Params from Python ----
     const COUNT   = %d;
     const IMG_SRC = "%s";
     const COLS=24, ROWS=4;
-    const WAG_IN = Math.max(0, Math.min(3, %f));
+    const WAG_IN = Math.max(0, Math.min(3, %f)); // 0..3
 
-    const baseTex = PIXI.Texture.from(IMG_SRC);
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const baseTex = P.PIXI.Texture.from(IMG_SRC);
+    const reduced = P.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-    // pick whichever SimplePlane symbol exists
-    const SimplePlaneCtor = PIXI.SimplePlane
-      || (PIXI.mesh && PIXI.mesh.SimplePlane)
-      || (PIXI.meshSimple && PIXI.meshSimple.SimplePlane);
+    // Pick whichever SimplePlane symbol exists in this Pixi build
+    const SimplePlaneCtor = P.PIXI.SimplePlane
+      || (P.PIXI.mesh && P.PIXI.mesh.SimplePlane)
+      || (P.PIXI.meshSimple && P.PIXI.meshSimple.SimplePlane);
     if (!SimplePlaneCtor) throw new Error('SimplePlane plugin not found');
 
-    const topSafe = 120;
-    const bottomSafe = 110;
+    // Clean previous swimmers & ticker handler so we can rebuild with new COUNT/WAG_IN.
+    if (P.__KM_PIXI_TICK__) app.ticker.remove(P.__KM_PIXI_TICK__);
+    app.stage.removeChildren();
+
+    const topSafe = 120, bottomSafe = 110;
 
     function spawnY(index, total){
       const H = app.renderer.height;
@@ -714,49 +728,49 @@ def add_pixishark_layer(image_path="assets/shark.png", shark_count=6, wag_intens
 
     function makeSwimmer(index, total){
       const plane = new SimplePlaneCtor(baseTex, COLS, ROWS);
-      const fish  = new PIXI.Container();
+      const fish  = new P.PIXI.Container();
 
-      // ~40 percent smaller overall, still varying for depth
-      const scale = (0.22 + Math.random()*0.48) * 0.60;
+      // ~40percent smaller overall, still varies for depth perception
+      const scale = (0.22 + Math.random()*0.48) * 0.60;  // ≈ 0.132..0.42
       fish.scale.set(scale);
 
-      // shadow
+      // Shadow (center-locked & overlapped)
       const texW = baseTex.width, texH = baseTex.height;
-      const sh = new PIXI.Graphics();
+      const sh = new P.PIXI.Graphics();
       const shadowW = texW * 0.42, shadowH = texH * 0.09;
       sh.beginFill(0x000000, 0.22).drawEllipse(0, 0, shadowW, shadowH).endFill();
       sh.position.set(texW * 0.50, texH * 0.60);
-      if (PIXI.filters && PIXI.filters.BlurFilter){
-        const blur = new PIXI.filters.BlurFilter(3);
+      if (P.PIXI.filters && P.PIXI.filters.BlurFilter){
+        const blur = new P.PIXI.filters.BlurFilter(3);
         blur.quality = 1;
         blur.repeatEdgePixels = true;
         sh.filters = [blur];
       }
-      sh.blendMode = PIXI.BLEND_MODES.MULTIPLY;
+      sh.blendMode = P.PIXI.BLEND_MODES.MULTIPLY;
 
       fish.sortableChildren = true;
       sh.zIndex = 0; plane.zIndex = 1;
       fish.addChild(sh);
       fish.addChild(plane);
 
-      // parallax: speed/alpha by depth
+      // Parallax: speed/alpha by depth
       const speed = (0.6 + scale*1.6) * (reduced ? 0.6 : 1.0);
       fish.alpha = (scale < 0.30) ? 0.85 : 1.0;
-      if (PIXI.filters && PIXI.filters.BlurFilter && scale < 0.30){
-        fish.filters = [new PIXI.filters.BlurFilter(1.2)];
+      if (P.PIXI.filters && P.PIXI.filters.BlurFilter && scale < 0.30){
+        fish.filters = [new P.PIXI.filters.BlurFilter(1.2)];
       }
 
       app.stage.addChild(fish);
       fish.y = spawnY(index, total);
       fish.x = spawnX(fish.width, index);
 
-      // sinusoidal swim path
+      // Sinusoidal swim path
       let yBase  = fish.y;
       const yAmp = (14 + scale * 32) * (reduced ? 0.5 : 1);
       const yHz  = 0.18 + Math.random() * 0.22;
       let yPhase = Math.random() * Math.PI * 2;
 
-      // tail wag
+      // Tail wag (intensity-scaled)
       const buf = plane.geometry.getBuffer('aVertexPosition');
       const baseVerts = buf.data.slice(), cols=COLS, rows=ROWS;
       const ampPx = (6 + scale*10) * (reduced ? 0.5 : 1.0) * (0.25 + 0.75 * WAG_IN);
@@ -781,6 +795,7 @@ def add_pixishark_layer(image_path="assets/shark.png", shark_count=6, wag_intens
         fish.x += speed * dt;
         fish.y = yBase + Math.sin(t * 2*Math.PI * yHz + yPhase) * yAmp;
 
+        // recycle
         if (fish.x - fish.width*0.5 > app.renderer.width + 60){
           yBase  = spawnY(index, total);
           yPhase = Math.random() * Math.PI * 2;
@@ -795,16 +810,42 @@ def add_pixishark_layer(image_path="assets/shark.png", shark_count=6, wag_intens
     const swimmers = [];
     for (let i = 0; i < COUNT; i++) swimmers.push(makeSwimmer(i, COUNT));
 
-    app.ticker.add(dt => swimmers.forEach(s => s.update(dt)));
+    // Replace old ticker fn with a fresh one
+    const tick = dt => swimmers.forEach(s => s.update(dt));
+    app.ticker.add(tick);
+    P.__KM_PIXI_TICK__ = tick;
 
-    // Safety: if the canvas ever stops being connected, try to resume ticker.
-    setInterval(()=>resume(), 2000);
+    // Safari lifecycle: resume ticker when page/tab returns
+    function resume(){ if (app.ticker && !app.ticker.started) app.ticker.start(); }
+    P.addEventListener('focus', resume, {passive:true});
+    PDoc.addEventListener('visibilitychange', ()=>{ if (!PDoc.hidden) resume(); }, {passive:true});
+    P.addEventListener('pageshow', resume, {passive:true});
+
   }).catch(console.error);
+
+  // Make the *iframe wrapper* inert (just in case Streamlit leaves it in flow)
+  const me = window.frameElement;
+  if (me){
+    const wrapper = me.parentElement;
+    if (wrapper){
+      wrapper.style.height = '0px';
+      wrapper.style.minHeight = '0';
+      wrapper.style.overflow = 'visible';
+      wrapper.style.pointerEvents = 'none';
+      wrapper.setAttribute('aria-hidden', 'true');
+    }
+    me.style.width = '0px';
+    me.style.height = '0px';
+    me.style.pointerEvents = 'none';
+    me.setAttribute('aria-hidden','true');
+    me.setAttribute('scrolling','no');
+    me.style.border = '0';
+  }
 })();
 </script>
 """
-    # Use a stable key so Streamlit won't duplicate the component if position shifts
-    components.html(html % (shark_count, data_url, wag_intensity), height=1, scrolling=False)
+    # Use a stable key; height=0 so wrapper has no layout impact
+    components.html(html % (shark_count, data_url, wag_intensity), height=0, scrolling=False)
 
 # ========== UI ==========
 st.set_page_config(page_title="AI-Powered Enterprise Knowledge Fabric", page_icon="💡", layout="wide")
@@ -840,16 +881,53 @@ if st.session_state.context_buffer is None:
 # ============= Global Styles and Animated Background =============
 st.markdown("""
 <style>
-/* ----- App background ----- */
-html, body, [data-testid="stAppViewContainer"] { height: 100%; margin: 0; }
+
+/* ===== SCROLL-SAFE PAGE + PIXI OVERLAY BASELINE (paste at top) ===== */
+
+/* Let the document grow and scroll (Safari/iOS friendly) */
+html, body {
+  margin: 0;
+  height: auto !important;           /* allow full document height */
+  min-height: 100%;                  /* at least viewport */
+  overflow-y: auto !important;       /* ensure page scrolls */
+  -webkit-overflow-scrolling: touch; /* momentum scrolling on iOS */
+}
+
+/* Streamlit containers must not clamp height */
+[data-testid="stAppViewContainer"],
+[data-testid="stMain"],
+.block-container {
+  height: auto !important;
+  min-height: 100vh !important;
+  overflow: visible !important;
+  position: relative;
+}
+
+/* App background (no fixed height) */
 [data-testid="stAppViewContainer"]{
   position: relative;
+  min-height: 100vh;
+  overflow: visible !important;
   background: radial-gradient(circle at center,
     #e6f2ff 0%, #cfe7ff 26%, #84bdfd 48%, #3c87d3 70%, #183160 90%, #09152d 100%);
 }
 
-/* Make the UI clearly above the sharks layers (which is z-index:1) */
-header[data-testid="stHeader"], .block-container{ position:relative; z-index:10; }
+/* Keep UI above the shark canvas (overlay uses z-index: 1) */
+header[data-testid="stHeader"],
+.block-container {
+  position: relative;
+  z-index: 10;
+}
+
+/* Ensure the parent-page PIXI host (inserted by JS) is inert & behind UI */
+#km-pixi-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: transparent;
+  -webkit-transform: translateZ(0); /* helps Safari repaint */
+}
 
 /* ===== Card wrappers (reliable, visible colors) ===== */
 .km-card{
