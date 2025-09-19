@@ -620,7 +620,7 @@ def extract_metadata_from_text(corpus: str) -> Dict[str, str]:
         function = to_title_case_words(function_candidate)
     return {"email": email, "site": site, "function": function}
 
-def add_pixishark_layer(image_path="assets/shark.png", shark_count=6):
+def add_pixishark_layer(image_path="assets/shark.png", shark_count=6, wag_intensity: float = 1.0):
     """Full-viewport PixiJS canvas behind the app with depth + distribution."""
     import base64
     import streamlit.components.v1 as components
@@ -670,6 +670,7 @@ def add_pixishark_layer(image_path="assets/shark.png", shark_count=6):
     const COUNT   = %d;
     const IMG_SRC = "%s";
     const COLS=24, ROWS=4;
+    const WAG_IN = Math.max(0, Math.min(3, %f)); // clamp 0..3 (0 = rigid, 1 = normal, 2 = extra wag)
 
     const baseTex = PIXI.Texture.from(IMG_SRC);
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -709,7 +710,7 @@ def add_pixishark_layer(image_path="assets/shark.png", shark_count=6):
       const fish  = new PIXI.Container();
     
       // depth: scale 0.22 .. 0.70 (smaller == farther)
-      const scale = 0.22 + Math.random()*0.48;
+      const scale = (0.22 + Math.random()*0.48)*0.7;
       fish.scale.set(scale);
     
       // ---------- shadow (center-locked & overlapped) ----------
@@ -743,16 +744,27 @@ def add_pixishark_layer(image_path="assets/shark.png", shark_count=6):
       app.stage.addChild(fish);
       fish.y = spawnY(index, total);
       fish.x = spawnX(fish.width, index);
+
+      // --- sinusoidal path params (per fish) ---
+      let yBase  = fish.y;                                  // lane center
+      const yAmp = (14 + scale * 32) * (reduced ? 0.5 : 1); // vertical amplitude
+      const yHz  = 0.18 + Math.random() * 0.22;             // 0.18–0.40 Hz
+      let yPhase = Math.random() * Math.PI * 2;             // starting phase
     
       // wave params (bigger fish wag a bit wider)
       const buf = plane.geometry.getBuffer('aVertexPosition');
       const baseVerts = buf.data.slice(), cols=COLS, rows=ROWS;
-      const ampPx = (6 + scale*10) * (reduced ? 0.5 : 1.0);
-      const hz    = 0.9 + Math.random()*0.5;
+      // wag intensity: scale amplitude and slightly the frequency
+      const ampPx = (6 + scale*10) * (reduced ? 0.5 : 1.0) * (0.25 + 0.75 * WAG_IN);
+      // frequency gets a subtle boost with intensity to avoid floppy look
+      const hz    = (0.9 + Math.random()*0.5) * (0.85 + 0.30 * Math.min(WAG_IN, 2.0));
       let t = Math.random()*Math.PI*2;
     
       function update(dt){
+        // time accumulator for tail + path
         t += (dt/60) * (reduced ? 0.35 : 1.0);
+      
+        // tail deformation (unchanged)
         const verts = buf.data;
         for (let r=0; r<rows; r++){
           for (let c=0; c<cols; c++){
@@ -764,17 +776,25 @@ def add_pixishark_layer(image_path="assets/shark.png", shark_count=6):
           }
         }
         buf.update();
-    
+      
+        // horizontal motion
         fish.x += speed * dt;
-        fish.y += Math.sin(t*1.2) * 0.15;
-    
-        // recycle when off-screen right (USE index/total!)
+      
+        // vertical sinusoid around lane center (remove the old tiny bob)
+        fish.y = yBase + Math.sin(t * 2*Math.PI * yHz + yPhase) * yAmp;
+      
+        // recycle when off-screen right
         if (fish.x - fish.width*0.5 > app.renderer.width + 60){
-          fish.y = spawnY(index, total);
+          // new lane + new phase (keeps things varied)
+          yBase  = spawnY(index, total);
+          yPhase = Math.random() * Math.PI * 2;
+      
+          fish.y = yBase;
           fish.x = spawnX(fish.width, index);
           t = Math.random()*Math.PI*2;
         }
       }
+
       return { update };
     }
     
@@ -792,7 +812,7 @@ def add_pixishark_layer(image_path="assets/shark.png", shark_count=6):
 })();
 </script>
 """
-    components.html(html % (shark_count, data_url), height=1, scrolling=False)
+    components.html(html % (shark_count, data_url, wag_intensity), height=1, scrolling=False)
 
 # ========== UI ==========
 st.set_page_config(page_title="AI-Powered Enterprise Knowledge Fabric", page_icon="💡", layout="wide")
@@ -1225,5 +1245,5 @@ with right:
     st.markdown('</div>', unsafe_allow_html=True)  # close green card
 
 if "pixi_shark_layer_added" not in st.session_state:
-    add_pixishark_layer(image_path="assets/shark.png", shark_count=1)
+    add_pixishark_layer(image_path="assets/shark.png", shark_count=2, wag_intensity=1.9)
     st.session_state["pixi_shark_layer_added"] = True
