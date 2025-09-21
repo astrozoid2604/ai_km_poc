@@ -22,9 +22,9 @@
 
 This guide explains how to configure your macOS environment to deploy RAG chatbot locally for the purpose of implementing Data Ingestion mode and Intelligent Search mode for Knowledge Marketplace.
 
-[YouTube Video LINK](https://youtu.be/hRE5_NJgH_E)
+[YouTube Video LINK](https://youtu.be/PZ6Rh3xbuME)
 
-[![YouTube Thumbnail](https://img.youtube.com/vi/hRE5_NJgH_E/hqdefault.jpg)](https://youtu.be/hRE5_NJgH_E)
+[![YouTube Thumbnail](https://img.youtube.com/vi/PZ6Rh3xbuME/hqdefault.jpg)](PZ6Rh3xbuME)
 
 ---
 
